@@ -107,7 +107,36 @@ nodes:
 
 edges:
   - { from: leer, to: escribir }
+  # `port:` da nombre a la entrada; por defecto es el id del nodo de origen.
+  # Sólo importa en un nodo `sql`, que registra cada puerto como una tabla.
+  - { from: otra_rama, to: unir, port: pedidos }
 ```
+
+### Joins
+
+Un nodo `sql` ve cada entrada como una tabla con el nombre de su puerto, así
+que unir dos ramas no necesita sintaxis nueva:
+
+```yaml
+nodes:
+  - { id: clientes, type: source, connector: csv, config: { path: clientes.csv } }
+  - { id: pedidos,  type: source, connector: csv, config: { path: pedidos.csv } }
+  - id: cruzar
+    type: transform
+    op: sql
+    config:
+      query: "SELECT c.nombre, sum(p.importe) AS total
+              FROM clientes c JOIN pedidos p ON c.id = p.cliente_id
+              GROUP BY c.nombre"
+edges:
+  - { from: clientes, to: cruzar }
+  - { from: pedidos, to: cruzar }
+```
+
+Cuando el nodo tiene una sola entrada, se registra además como `input`, que es
+lo que usan `filter`, `derive` y `aggregate`. Esas tres exigen exactamente una
+entrada y lo dicen en `validate`; para combinar varias hay que usar `sql`.
+Ejemplo completo en [examples/pipelines/join.yaml](examples/pipelines/join.yaml).
 
 ### Componentes disponibles
 
@@ -166,12 +195,21 @@ ya consumió o emitió lotes duplicaría o perdería filas. Si el nodo ya se mov
 el fallo es definitivo y el informe lo dice.
 
 **DataFusion entra como transformación aislada, no como planificador global.**
-Cada nodo SQL registra el flujo del nodo anterior como un `StreamingTable` y
-DataFusion tira de los batches: `filter` y `derive` no acumulan nada. La
-alternativa —dejar que DataFusion planifique sub-grafos enteros— permitiría
-empujar filtros hasta el origen, pero obligaría a que cada conector fuera un
-`TableProvider` y ataría el motor a su modelo de ejecución. Queda pendiente de
-medir antes de decidir.
+Cada nodo SQL registra sus entradas como `StreamingTable` y DataFusion tira de
+los batches: `filter` y `derive` no acumulan nada. La decisión está medida:
+tres nodos SQL encadenados tardan lo mismo que una sola query equivalente (86
+ms frente a 90 ms sobre 10 M de filas), porque cada nodo es una tarea de Tokio
+y las etapas se solapan. Fusionar transformaciones no compra nada, y mantener
+los conectores independientes de DataFusion sí vale. Lo que un planificador
+global sí daría —empujar filtros hasta el origen— se consigue con pushdown por
+conector, en la Fase 0.3.
+
+**Los esquemas se propagan en `validate`.** Los orígenes declaran qué columnas
+producen sin leer datos y cada transformación calcula su salida, así que una
+columna mal escrita, un fan-in con esquemas incompatibles o un `filter` con dos
+entradas se detectan antes de tocar ninguna fuente. Un origen que aún no puede
+saberlo (un CSV que generará un paso anterior) devuelve "desconocido" y la
+cadena se corta sin invalidar el pipeline.
 
 **El `SessionContext` de cada nodo SQL se construye al preparar el pipeline,
 no al ejecutarlo**, para que un pipeline preparado una vez y ejecutado muchas
@@ -190,11 +228,11 @@ también hace usable el ciclo de desarrollo.
   terminar el proceso; DuckDB entra en la Fase 0.4.
 - **Las ramas independientes no se cancelan** cuando otra falla: terminan su
   trabajo y el run se marca como fallido al final.
-- **El esquema se descubre del primer lote**, no en `validate`. Una columna
-  inexistente falla en ejecución, y una entrada vacía produce salida vacía
-  incluso para un `COUNT(*)`, que en SQL puro devolvería una fila con 0.
-- **Un nodo SQL ve un solo flujo de una pasada**, así que no hay joins entre
-  ramas del DAG. Si el plan intentara escanear la tabla dos veces (un
-  self-join), falla con un mensaje explícito en vez de devolver vacío.
+- **Cada entrada es un flujo de una sola pasada.** Si un plan intenta escanear
+  la misma tabla dos veces (un self-join), falla con un mensaje explícito en
+  vez de devolver vacío en silencio.
+- **Un nodo `sql` con varias entradas necesita que todas declaren esquema.**
+  Espiar varios puertos en serie podría bloquear el pipeline si comparten un
+  origen aguas arriba; espiarlos en paralelo está pendiente.
 - **`aggregate` y `ORDER BY` rompen el streaming**: acumulan estado en
   memoria. Usa `memory_limit_mb` en esos nodos.

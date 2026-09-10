@@ -1,0 +1,43 @@
+# El mismo trabajo que `benchmark_sql_chained.yaml`, en una sola query.
+#
+# Un único plan de DataFusion: el optimizador ve el filtro, la proyección y el
+# agregado a la vez, y no hay canales intermedios. Es el límite superior de lo
+# que ganaría planificar sub-grafos completos en vez de nodo a nodo.
+#
+#   cargo run --release -p orch-cli -- run examples/pipelines/benchmark_sql_fused.yaml
+
+version: 1
+name: benchmark-sql-fusionado
+description: 10 M de filas por un solo nodo SQL equivalente a la cadena de tres.
+
+settings:
+  batch_size: 65536
+  channel_capacity: 8
+
+nodes:
+  - id: generar
+    type: source
+    connector: generator
+    config:
+      rows: 10000000
+      with_text: false
+
+  - id: todo
+    type: transform
+    op: sql
+    config:
+      query: >
+        SELECT id % 100 AS grupo,
+               count(*) AS n,
+               sum(value * 1.18) AS total
+        FROM input
+        WHERE id >= 5000000
+        GROUP BY id % 100
+
+  - id: descartar
+    type: sink
+    connector: "null"
+
+edges:
+  - { from: generar, to: todo }
+  - { from: todo, to: descartar }

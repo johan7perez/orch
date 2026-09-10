@@ -58,7 +58,8 @@ impl GeneratorSource {
         }
     }
 
-    pub fn schema(&self) -> SchemaRef {
+    /// Esquema fijo que produce este generador.
+    pub fn output_schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
 
@@ -83,6 +84,10 @@ impl GeneratorSource {
 impl Source for GeneratorSource {
     fn connector(&self) -> &str {
         "generator"
+    }
+
+    async fn schema(&self) -> Result<Option<SchemaRef>> {
+        Ok(Some(self.output_schema()))
     }
 
     async fn read(&self, ctx: &NodeContext, output: &Output) -> Result<()> {

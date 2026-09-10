@@ -1,0 +1,61 @@
+# Unir dos ramas del DAG.
+#
+#   cargo run -p orch-cli -- graph examples/pipelines/join.yaml
+#   cargo run -p orch-cli -- run   examples/pipelines/join.yaml --follow
+#
+# Cada arista que entra en un nodo `sql` se registra como una tabla. El nombre
+# es el del puerto, que por defecto es el id del nodo de origen — por eso el
+# join se escribe sin sintaxis nueva. Con `port:` se le puede dar otro nombre,
+# útil cuando el id del nodo es largo o poco natural como tabla.
+
+version: 1
+name: pedidos-por-cliente
+description: Cruza clientes con sus pedidos pagados y calcula el total por ciudad.
+
+nodes:
+  - id: leer_clientes
+    type: source
+    connector: csv
+    config:
+      path: examples/data/customers.csv
+
+  - id: leer_pedidos
+    type: source
+    connector: csv
+    config:
+      path: examples/data/orders.csv
+
+  # Sólo los pedidos que cuentan. Se resuelve en streaming, antes del join.
+  - id: pagados
+    type: transform
+    op: filter
+    config:
+      where: "status = 'pagado'"
+
+  - id: cruzar
+    type: transform
+    op: sql
+    config:
+      # `clientes` y `pedidos` son los nombres de puerto de las dos aristas.
+      query: >
+        SELECT c.city AS ciudad,
+               count(DISTINCT c.id) AS clientes,
+               count(*) AS pedidos,
+               round(sum(p.amount), 2) AS facturado
+        FROM clientes c
+        JOIN pedidos p ON c.id = p.customer_id
+        GROUP BY c.city
+        ORDER BY facturado DESC
+      memory_limit_mb: 256
+
+  - id: escribir
+    type: sink
+    connector: csv
+    config:
+      path: out/pedidos_por_ciudad.csv
+
+edges:
+  - { from: leer_clientes, to: cruzar, port: clientes }
+  - { from: leer_pedidos, to: pagados }
+  - { from: pagados, to: cruzar, port: pedidos }
+  - { from: cruzar, to: escribir }

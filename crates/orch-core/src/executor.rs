@@ -20,6 +20,7 @@ use crate::error::{OrchError, Result};
 use crate::event::{RunEvent, EVENT_CHANNEL_CAPACITY};
 use crate::io::{batch_channel, Input, IoStats, NodeSignal, Output};
 use crate::registry::Registry;
+use crate::schema::{InputSchemas, PortSchema};
 use crate::spec::{NodeKind, RetryPolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -96,12 +97,15 @@ impl Executor {
         &self.registry
     }
 
-    /// Construye todos los conectores del DAG sin ejecutar nada.
+    /// Construye todos los conectores del DAG y propaga los esquemas, sin
+    /// ejecutar nada.
     ///
-    /// Es lo que usa `orch validate`: detecta conectores desconocidos y configs
-    /// mal formadas antes de abrir un solo fichero.
-    pub fn prepare(&self, dag: &Dag) -> Result<()> {
-        self.build_runners(dag).map(|_| ())
+    /// Es lo que usa `orch validate`: detecta conectores desconocidos, configs
+    /// mal formadas, columnas inexistentes y fan-in con esquemas
+    /// incompatibles, todo antes de abrir un solo fichero.
+    pub async fn prepare(&self, dag: &Dag) -> Result<Vec<InputSchemas>> {
+        let runners = self.build_runners(dag)?;
+        plan_schemas(dag, &runners).await
     }
 
     fn build_runners(&self, dag: &Dag) -> Result<Vec<Runner>> {
@@ -132,6 +136,11 @@ impl Executor {
     /// error.
     pub async fn run(&self, dag: &Dag) -> Result<RunReport> {
         let runners = self.build_runners(dag)?;
+        let input_schemas: Vec<Arc<InputSchemas>> = plan_schemas(dag, &runners)
+            .await?
+            .into_iter()
+            .map(Arc::new)
+            .collect();
         let run_id = uuid::Uuid::new_v4().to_string();
         let pipeline = dag.spec().name.clone();
         let settings = dag.spec().settings.clone();
@@ -177,6 +186,7 @@ impl Executor {
             inputs[to] = Some(Input::new(
                 dag.node(to).id.clone(),
                 receivers,
+                dag.upstream_ports(to).to_vec(),
                 upstream_ids,
                 upstream_signals,
             ));
@@ -208,6 +218,7 @@ impl Executor {
                 node: node.id.clone(),
                 attempt: 1,
                 settings: settings.clone(),
+                inputs: Arc::clone(&input_schemas[i]),
             };
             let events = self.events.clone();
             let span = tracing::info_span!(
@@ -428,6 +439,50 @@ async fn execute_node(
     drop(input);
 
     report
+}
+
+/// Recorre el DAG en orden topológico propagando esquemas.
+///
+/// Cada nodo declara lo que produce a partir de lo que recibe. Un `None` no
+/// invalida nada: significa "todavía no se puede saber", y a partir de ahí la
+/// cadena deja de propagarse. Lo que sí se detiene aquí son los errores que
+/// un nodo detecta al ver sus entradas: una columna que no existe, un fan-in
+/// con esquemas incompatibles o un `filter` con dos entradas.
+async fn plan_schemas(dag: &Dag, runners: &[Runner]) -> Result<Vec<InputSchemas>> {
+    let n = dag.len();
+    let mut produced: Vec<Option<arrow::datatypes::SchemaRef>> = vec![None; n];
+    let mut inputs: Vec<InputSchemas> = vec![InputSchemas::default(); n];
+
+    for &i in dag.topological_order() {
+        let ports = dag
+            .upstream(i)
+            .iter()
+            .zip(dag.upstream_ports(i))
+            .map(|(&from, port)| PortSchema {
+                port: port.clone(),
+                upstream: dag.node(from).id.clone(),
+                schema: produced[from].clone(),
+            })
+            .collect();
+        inputs[i] = InputSchemas::new(ports);
+
+        produced[i] = match &runners[i] {
+            Runner::Source(source) => source.schema().await?,
+            Runner::Transform(transform) => transform.plan(&inputs[i]).await?,
+            Runner::Sink(sink) => {
+                sink.plan(&inputs[i]).await?;
+                None
+            }
+        };
+
+        tracing::debug!(
+            node = %dag.node(i).id,
+            schema = produced[i].as_ref().map(crate::schema::describe),
+            "esquema propagado"
+        );
+    }
+
+    Ok(inputs)
 }
 
 fn unzip3<A, B, C>(items: Vec<(A, B, C)>) -> (Vec<A>, Vec<B>, Vec<C>) {

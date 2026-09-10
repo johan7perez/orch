@@ -32,7 +32,7 @@ Leyenda: ✅ hecho · 🚧 en curso · ⬜ pendiente
 - ✅ Línea base de throughput: 10 M filas en 56 ms (~180 M filas/s) con
   generador → sink nulo en release.
 
-### 0.2 Motor de transformaciones (DataFusion) 🚧
+### 0.2 Motor de transformaciones (DataFusion) ✅
 
 - ✅ Crate `orch-sql` con DataFusion 55 (alineado con `arrow` 59, una sola
   versión de Arrow en el workspace).
@@ -51,23 +51,45 @@ Leyenda: ✅ hecho · 🚧 en curso · ⬜ pendiente
 - ✅ Coste del camino SQL medido: 10 M de filas por un `filter` de DataFusion
   en 65 ms, frente a 54 ms de la línea base sin nodo SQL (~1 ns/fila). El
   filtro no materializa nada.
-- ⬜ **Decidir el punto de integración.** Implementada la opción "transformación
-  aislada". Falta prototipar y medir la alternativa: DataFusion planificando
-  sub-grafos completos, con los conectores expuestos como `TableProvider`.
-  Ganaría empuje de filtros hasta el origen; costaría atar el motor a su
-  modelo de ejecución.
-- ⬜ **Propagación estática de esquemas hasta `validate`.** Hoy el esquema se
-  descubre del primer lote, así que una columna inexistente falla en
-  ejecución y no en `validate`, y una entrada vacía no produce plan (un
-  `COUNT(*)` sobre cero filas devuelve vacío en vez de una fila con 0).
-  Requiere que los orígenes declaren su esquema sin leer datos.
-- ⬜ Joins entre dos ramas del DAG: hoy la tabla de entrada es de una sola
-  pasada y un nodo SQL sólo ve un flujo (el fan-in concatena).
+- ✅ **Punto de integración decidido: transformación aislada.** Medido el
+  coste de no fusionar, comparando tres nodos SQL encadenados (`filter` →
+  `derive` → `aggregate`) contra una sola query equivalente sobre 10 M de
+  filas: **86 ms encadenado, 90 ms fusionado**. No hay diferencia — si acaso
+  la cadena va marginalmente mejor. Cada nodo es una tarea de Tokio, así que
+  las etapas se solapan (`generar` termina en 73 ms y `agregar` en 86) y los
+  saltos de canal son clones de `Arc`. Fusionar transformaciones no compra
+  nada, y la opción aislada mantiene los conectores independientes de
+  DataFusion. Un test comprueba que ambas formas dan el mismo resultado, para
+  que la comparación signifique algo.
+  - Salvedad: esto mide la fusión **entre transformaciones**, no el empuje de
+    filtros y proyecciones **hasta el conector**. Eso sí puede valer mucho
+    (leer menos columnas de un Parquet, mandar el `WHERE` a Postgres) y se
+    consigue con pushdown por conector, sin planificador global. Entra en 0.3.
+- ✅ **Propagación estática de esquemas.** Los orígenes declaran su esquema
+  sin leer datos (`csv` infiere de la cabecera, `generator` lo conoce) y cada
+  transformación calcula el suyo en `prepare`. Un origen que no puede saberlo
+  devuelve `None` y la cadena se corta sin invalidar el pipeline: `validate`
+  no puede exigir que las fuentes existan. Ahora se detectan en `validate`
+  las columnas inexistentes, el fan-in con esquemas incompatibles y un
+  `filter` con dos entradas. Y con esquema conocido hay plan aunque no llegue
+  ni un lote, así que un `COUNT(*)` sobre cero filas devuelve una fila con 0.
+- ✅ **Joins entre ramas del DAG.** Cada arista entrante es un puerto con
+  nombre (por defecto el id del nodo de origen, o `port:` en la arista), y un
+  nodo `sql` registra cada puerto como una tabla. El join se escribe sin
+  sintaxis nueva. `filter`, `derive` y `aggregate` siguen exigiendo una sola
+  entrada y lo dicen en `validate`.
+- ⬜ Un nodo `sql` con varias entradas necesita que todas declaren esquema:
+  espiar varios puertos en serie podría bloquear el pipeline si comparten un
+  origen aguas arriba. Se resolvería espiándolos en paralelo.
 
 ### 0.3 Conectores restantes de la Fase 0 ⬜
 
 - ⬜ **Postgres** origen y destino (`tokio-postgres`): lectura por cursor en
   streaming, escritura con `COPY BINARY` — nunca `INSERT` fila a fila.
+- ⬜ **Pushdown por conector**: que un `filter` o un `select` inmediatamente
+  posterior a un origen se traduzca en leer menos. Es donde de verdad está la
+  ganancia que un planificador global habría dado (ver 0.2), y se consigue
+  sin acoplar el motor a DataFusion.
 - ⬜ **REST** origen y destino: paginación, límite de tasa, reintentos por
   código de estado.
 - ⬜ **Parquet** origen y destino: es el formato donde Arrow rinde mejor y el

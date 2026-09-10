@@ -166,6 +166,7 @@ edges:
 
     let err = Executor::new(default_registry_arc())
         .prepare(&dag)
+        .await
         .expect_err("`ruta` no es un campo válido");
     assert!(err.to_string().contains("leer"), "{err}");
 }

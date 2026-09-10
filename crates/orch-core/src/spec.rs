@@ -162,6 +162,21 @@ impl NodeKind {
 pub struct EdgeSpec {
     pub from: NodeId,
     pub to: NodeId,
+    /// Nombre con el que el nodo destino ve esta entrada. Por defecto, el id
+    /// del nodo de origen.
+    ///
+    /// Sólo importa cuando el destino distingue sus entradas: un nodo `sql`
+    /// registra cada puerto como una tabla con este nombre, que es lo que
+    /// permite escribir un join. Los nodos que concatenan lo ignoran.
+    #[serde(default)]
+    pub port: Option<String>,
+}
+
+impl EdgeSpec {
+    /// Nombre efectivo del puerto.
+    pub fn port_name(&self) -> &str {
+        self.port.as_deref().unwrap_or(&self.from)
+    }
 }
 
 /// Política de reintentos de un nodo.

@@ -263,7 +263,7 @@ edges:
 }
 
 #[tokio::test]
-async fn una_entrada_vacia_produce_una_salida_vacia() {
+async fn una_entrada_vacia_con_esquema_conocido_sigue_contando() {
     let dir = TempDir::new().expect("tempdir");
     let out = temp_path(&dir, "out.csv");
 
@@ -289,15 +289,89 @@ edges:
     .await;
 
     assert!(report.succeeded, "{report:?}");
-    assert_eq!(report.rows_written(), 0);
-    // Sin esquema no hay plan: la salida es vacía en vez de una fila con 0.
-    assert!(read_lines(&out).is_empty());
+    // El esquema viene propagado desde el generador, así que hay plan aunque
+    // no llegue ni un lote: `count(*)` devuelve una fila con 0, como en SQL.
+    assert_eq!(report.rows_written(), 1);
+    assert_eq!(read_lines(&out), vec!["filas".to_string(), "0".to_string()]);
+}
+
+#[tokio::test]
+async fn la_cadena_de_tres_nodos_y_la_query_fusionada_dan_lo_mismo() {
+    // Es lo que hace comparables `benchmark_sql_chained.yaml` y
+    // `benchmark_sql_fused.yaml`: si los resultados no coincidieran, medir sus
+    // tiempos no diría nada.
+    let dir = TempDir::new().expect("tempdir");
+    let encadenado = temp_path(&dir, "encadenado.csv");
+    let fusionado = temp_path(&dir, "fusionado.csv");
+
+    let chained = run(&format!(
+        r#"
+name: encadenado
+nodes:
+  - {{ id: generar, type: source, connector: generator, config: {{ rows: 1000, with_text: false }} }}
+  - {{ id: filtrar, type: transform, op: filter, config: {{ where: "id >= 500" }} }}
+  - id: derivar
+    type: transform
+    op: derive
+    config:
+      columns:
+        grupo: "id % 10"
+        ajustado: "value * 1.18"
+  - id: agregar
+    type: transform
+    op: aggregate
+    config:
+      group_by: [grupo]
+      aggregates:
+        n: "count(*)"
+        total: "sum(ajustado)"
+  - {{ id: escribir, type: sink, connector: csv, config: {{ path: "{encadenado}" }} }}
+edges:
+  - {{ from: generar, to: filtrar }}
+  - {{ from: filtrar, to: derivar }}
+  - {{ from: derivar, to: agregar }}
+  - {{ from: agregar, to: escribir }}
+"#
+    ))
+    .await;
+    assert!(chained.succeeded, "{chained:?}");
+
+    let fused = run(&format!(
+        r#"
+name: fusionado
+nodes:
+  - {{ id: generar, type: source, connector: generator, config: {{ rows: 1000, with_text: false }} }}
+  - id: todo
+    type: transform
+    op: sql
+    config:
+      query: >
+        SELECT id % 10 AS grupo, count(*) AS n, sum(value * 1.18) AS total
+        FROM input WHERE id >= 500 GROUP BY id % 10
+  - {{ id: escribir, type: sink, connector: csv, config: {{ path: "{fusionado}" }} }}
+edges:
+  - {{ from: generar, to: todo }}
+  - {{ from: todo, to: escribir }}
+"#
+    ))
+    .await;
+    assert!(fused.succeeded, "{fused:?}");
+
+    // El agregado no garantiza orden, así que se comparan ordenados.
+    let mut a = read_lines(&encadenado);
+    let mut b = read_lines(&fusionado);
+    assert_eq!(a[0], "grupo,n,total");
+    assert_eq!(a[0], b[0]);
+    a.sort();
+    b.sort();
+    assert_eq!(a, b);
+    assert_eq!(a.len(), 11, "10 grupos más la cabecera");
 }
 
 // --- errores ----------------------------------------------------------------
 
-#[test]
-fn una_query_con_sintaxis_invalida_se_detecta_en_validate() {
+#[tokio::test]
+async fn una_query_con_sintaxis_invalida_se_detecta_en_validate() {
     let dag = dag(r#"
 name: sintaxis-mala
 nodes:
@@ -311,13 +385,18 @@ edges:
 
     let err = Executor::new(registry())
         .prepare(&dag)
+        .await
         .expect_err("`SELCT` no es SQL válido");
     assert!(err.to_string().contains("SQL inválido"), "{err}");
 }
 
 #[tokio::test]
-async fn una_columna_inexistente_falla_al_planificar() {
-    let report = run(r#"
+async fn una_columna_inexistente_impide_arrancar_la_ejecucion() {
+    // `run` planifica antes de mover un solo dato, así que una columna que no
+    // existe corta la ejecución en seco en vez de dejar el pipeline a medias.
+    // La validación equivalente en `orch validate` está en `joins.rs`.
+    let err = Executor::new(registry())
+        .run(&dag(r#"
 name: columna-mala
 nodes:
   - { id: generar, type: source, connector: generator, config: { rows: 10, with_text: false } }
@@ -326,22 +405,41 @@ nodes:
 edges:
   - { from: generar, to: q }
   - { from: q, to: descartar }
+"#))
+        .await
+        .expect_err("la propagación de esquemas debería rechazarlo");
+
+    assert!(
+        err.to_string().contains("no_existe"),
+        "el error debería nombrar la columna: {err}"
+    );
+}
+
+#[tokio::test]
+async fn un_fallo_a_mitad_no_da_por_bueno_al_sink() {
+    // El origen no existe, así que el fallo sólo aparece al ejecutar.
+    let report = run(r#"
+name: fuente-rota
+nodes:
+  - { id: leer, type: source, connector: csv, config: { path: "./no/existe.csv" } }
+  - { id: q, type: transform, op: filter, config: { where: "id > 1" } }
+  - { id: descartar, type: sink, connector: "null" }
+edges:
+  - { from: leer, to: q }
+  - { from: q, to: descartar }
 "#)
     .await;
 
     assert!(!report.succeeded);
-    let node = report
-        .nodes
-        .iter()
-        .find(|n| n.id == "q")
-        .expect("informe del nodo");
-    assert_eq!(node.status, NodeStatus::Failed);
-    let message = node.error.as_deref().unwrap_or_default();
-    assert!(
-        message.contains("no_existe"),
-        "el error debería nombrar la columna: {message}"
+    assert_eq!(
+        report
+            .nodes
+            .iter()
+            .find(|n| n.id == "leer")
+            .expect("informe del origen")
+            .status,
+        NodeStatus::Failed
     );
-    // El sink no puede darse por bueno con una salida truncada.
     assert_eq!(
         report
             .nodes
@@ -353,8 +451,8 @@ edges:
     );
 }
 
-#[test]
-fn un_campo_desconocido_en_la_config_se_detecta_en_validate() {
+#[tokio::test]
+async fn un_campo_desconocido_en_la_config_se_detecta_en_validate() {
     let dag = dag(r#"
 name: config-mala
 nodes:
@@ -368,6 +466,7 @@ edges:
 
     let err = Executor::new(registry())
         .prepare(&dag)
+        .await
         .expect_err("`wher` no es un campo válido");
     assert!(err.to_string().contains('q'), "{err}");
 }

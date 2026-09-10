@@ -12,6 +12,8 @@ pub struct Dag {
     index: HashMap<NodeId, usize>,
     /// Aristas de datos entrantes, en el orden en que se declararon.
     upstream: Vec<Vec<usize>>,
+    /// Nombre del puerto de cada arista entrante, en el mismo orden.
+    upstream_ports: Vec<Vec<String>>,
     /// Aristas de datos salientes.
     downstream: Vec<Vec<usize>>,
     /// Dependencias de orden puro (`after`).
@@ -68,6 +70,7 @@ impl Dag {
 
         let n = spec.nodes.len();
         let mut upstream = vec![Vec::new(); n];
+        let mut upstream_ports: Vec<Vec<String>> = vec![Vec::new(); n];
         let mut downstream = vec![Vec::new(); n];
         let mut seen_edges = HashSet::new();
 
@@ -108,8 +111,24 @@ impl Dag {
                     edge.to
                 )));
             }
+            let port = edge.port_name().to_string();
+            if port.trim().is_empty() {
+                return Err(OrchError::Validation(format!(
+                    "la arista `{}` -> `{}` tiene un nombre de puerto vacío",
+                    edge.from, edge.to
+                )));
+            }
+            if upstream_ports[to].contains(&port) {
+                return Err(OrchError::Validation(format!(
+                    "`{}` recibe dos entradas con el mismo nombre de puerto `{port}`; \
+                     usa `port:` en una de las aristas para distinguirlas",
+                    edge.to
+                )));
+            }
+
             downstream[from].push(to);
             upstream[to].push(from);
+            upstream_ports[to].push(port);
         }
 
         let mut barriers = vec![Vec::new(); n];
@@ -157,6 +176,7 @@ impl Dag {
             spec,
             index,
             upstream,
+            upstream_ports,
             downstream,
             barriers,
             order,
@@ -189,6 +209,12 @@ impl Dag {
 
     pub fn upstream(&self, i: usize) -> &[usize] {
         &self.upstream[i]
+    }
+
+    /// Nombres de puerto de las entradas de `i`, en el mismo orden que
+    /// [`Dag::upstream`].
+    pub fn upstream_ports(&self, i: usize) -> &[String] {
+        &self.upstream_ports[i]
     }
 
     pub fn downstream(&self, i: usize) -> &[usize] {

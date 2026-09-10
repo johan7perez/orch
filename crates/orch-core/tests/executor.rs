@@ -428,6 +428,7 @@ edges:
 
     let err = Executor::new(registry(&probe))
         .prepare(&dag)
+        .await
         .expect_err("debería fallar");
     assert!(err.to_string().contains("no-existe"), "{err}");
 }

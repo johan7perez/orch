@@ -1,10 +1,16 @@
 //! Canales de `RecordBatch` entre nodos.
 //!
-//! Un nodo nunca ve el grafo: recibe un [`Input`] (0..n aristas entrantes ya
-//! fusionadas) y un [`Output`] (0..n aristas salientes). Los batches de Arrow
-//! son `Arc` por dentro, así que el fan-out clona punteros, no datos.
+//! Un nodo nunca ve el grafo: recibe un [`Input`] (0..n aristas entrantes) y
+//! un [`Output`] (0..n aristas salientes). Los batches de Arrow son `Arc` por
+//! dentro, así que el fan-out clona punteros, no datos.
+//!
+//! Cada arista entrante es un **puerto** con nombre —por defecto el id del
+//! nodo de origen—. La mayoría de nodos los concatenan con [`Input::recv`] y
+//! ni se enteran; los que necesitan distinguirlos (un join en SQL) los toman
+//! por separado con [`Input::take_ports`].
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
 use tokio::sync::{mpsc, watch};
@@ -40,6 +46,7 @@ struct Counters {
     rows: AtomicU64,
     batches: AtomicU64,
     bytes: AtomicU64,
+    touched: AtomicBool,
 }
 
 impl Counters {
@@ -49,6 +56,19 @@ impl Counters {
         self.batches.fetch_add(1, Ordering::Relaxed);
         self.bytes
             .fetch_add(batch.get_array_memory_size() as u64, Ordering::Relaxed);
+        self.touched.store(true, Ordering::Release);
+    }
+
+    fn stats(&self) -> IoStats {
+        IoStats {
+            rows: self.rows.load(Ordering::Relaxed),
+            batches: self.batches.load(Ordering::Relaxed),
+            bytes: self.bytes.load(Ordering::Relaxed),
+        }
+    }
+
+    fn touched(&self) -> bool {
+        self.touched.load(Ordering::Acquire)
     }
 }
 
@@ -68,7 +88,6 @@ pub struct Output {
     downstream_ids: Vec<NodeId>,
     downstream_signals: Vec<watch::Receiver<NodeSignal>>,
     counters: Counters,
-    emitted: AtomicBool,
     closed: AtomicBool,
 }
 
@@ -87,7 +106,6 @@ impl Output {
             downstream_ids,
             downstream_signals,
             counters: Counters::default(),
-            emitted: AtomicBool::new(false),
             closed: AtomicBool::new(false),
         }
     }
@@ -122,7 +140,6 @@ impl Output {
 
         if delivered > 0 {
             self.counters.record(&batch);
-            self.emitted.store(true, Ordering::Release);
         } else if !self.senders.is_empty() {
             self.closed.store(true, Ordering::Release);
         }
@@ -147,52 +164,104 @@ impl Output {
     }
 
     pub fn has_emitted(&self) -> bool {
-        self.emitted.load(Ordering::Acquire)
+        self.counters.touched()
     }
 
     pub fn stats(&self) -> IoStats {
-        IoStats {
-            rows: self.counters.rows.load(Ordering::Relaxed),
-            batches: self.counters.batches.load(Ordering::Relaxed),
-            bytes: self.counters.bytes.load(Ordering::Relaxed),
+        self.counters.stats()
+    }
+}
+
+/// Una arista entrante concreta.
+///
+/// Se obtiene con [`Input::take_ports`] cuando un nodo necesita tratar sus
+/// entradas por separado. Cada puerto es independiente: pueden consumirse en
+/// paralelo sin aliasing, que es justo lo que necesita un join.
+#[derive(Debug)]
+pub struct InputPort {
+    node: NodeId,
+    /// Nombre del puerto; por defecto, el id del nodo de origen.
+    pub name: String,
+    pub upstream: NodeId,
+    receiver: BatchReceiver,
+    signal: watch::Receiver<NodeSignal>,
+    counters: Arc<Counters>,
+}
+
+impl InputPort {
+    /// Siguiente batch de este puerto, o `None` si terminó bien.
+    pub async fn recv(&mut self) -> Result<Option<RecordBatch>> {
+        match self.receiver.recv().await {
+            Some(batch) => {
+                self.counters.record(&batch);
+                Ok(Some(batch))
+            }
+            None => {
+                // El emisor se libera después de publicar su señal, así que
+                // aquí ya es visible.
+                match *self.signal.borrow() {
+                    NodeSignal::Failed | NodeSignal::Skipped => Err(OrchError::UpstreamFailed {
+                        node: self.node.clone(),
+                        upstream: self.upstream.clone(),
+                    }),
+                    _ => Ok(None),
+                }
+            }
         }
     }
 }
 
-/// Aristas entrantes de un nodo, presentadas como un único flujo.
+/// Aristas entrantes de un nodo.
 ///
-/// Las entradas se drenan en el orden en que se declararon las aristas
-/// (concatenación, no intercalado): el resultado es determinista y, como el
-/// grafo es acíclico, ningún productor puede quedarse bloqueado para siempre
-/// aunque su canal se llene mientras se drena otro.
+/// [`Input::recv`] las presenta como un único flujo, drenándolas en el orden
+/// en que se declararon las aristas (concatenación, no intercalado): el
+/// resultado es determinista y, como el grafo es acíclico, ningún productor
+/// puede quedarse bloqueado para siempre aunque su canal se llene mientras se
+/// drena otro.
 #[derive(Debug)]
 pub struct Input {
     node: NodeId,
-    receivers: Vec<BatchReceiver>,
-    upstream_ids: Vec<NodeId>,
-    upstream_signals: Vec<watch::Receiver<NodeSignal>>,
+    ports: Vec<InputPort>,
     cursor: usize,
-    counters: Counters,
-    consumed: AtomicBool,
+    counters: Arc<Counters>,
 }
 
 impl Input {
     pub fn new(
         node: impl Into<NodeId>,
         receivers: Vec<BatchReceiver>,
+        port_names: Vec<String>,
         upstream_ids: Vec<NodeId>,
         upstream_signals: Vec<watch::Receiver<NodeSignal>>,
     ) -> Self {
+        let node = node.into();
+        debug_assert_eq!(receivers.len(), port_names.len());
         debug_assert_eq!(receivers.len(), upstream_ids.len());
         debug_assert_eq!(receivers.len(), upstream_signals.len());
+
+        // Un único juego de contadores compartido: las métricas del nodo
+        // siguen siendo correctas aunque los puertos se hayan repartido.
+        let counters = Arc::new(Counters::default());
+        let ports = receivers
+            .into_iter()
+            .zip(port_names)
+            .zip(upstream_ids)
+            .zip(upstream_signals)
+            .map(|(((receiver, name), upstream), signal)| InputPort {
+                node: node.clone(),
+                name,
+                upstream,
+                receiver,
+                signal,
+                counters: Arc::clone(&counters),
+            })
+            .collect();
+
         Self {
-            node: node.into(),
-            receivers,
-            upstream_ids,
-            upstream_signals,
+            node,
+            ports,
             cursor: 0,
-            counters: Counters::default(),
-            consumed: AtomicBool::new(false),
+            counters,
         }
     }
 
@@ -203,46 +272,54 @@ impl Input {
     /// de otro modo un sink escribiría un resultado truncado y lo reportaría
     /// como éxito.
     pub async fn recv(&mut self) -> Result<Option<RecordBatch>> {
-        while self.cursor < self.receivers.len() {
-            match self.receivers[self.cursor].recv().await {
-                Some(batch) => {
-                    self.counters.record(&batch);
-                    self.consumed.store(true, Ordering::Release);
-                    return Ok(Some(batch));
-                }
-                None => {
-                    // El emisor se libera después de publicar su señal, así que
-                    // aquí ya es visible.
-                    let signal = *self.upstream_signals[self.cursor].borrow();
-                    if matches!(signal, NodeSignal::Failed | NodeSignal::Skipped) {
-                        return Err(OrchError::UpstreamFailed {
-                            node: self.node.clone(),
-                            upstream: self.upstream_ids[self.cursor].clone(),
-                        });
-                    }
-                    self.cursor += 1;
-                }
+        while self.cursor < self.ports.len() {
+            match self.ports[self.cursor].recv().await? {
+                Some(batch) => return Ok(Some(batch)),
+                None => self.cursor += 1,
             }
         }
         Ok(None)
     }
 
+    /// Toma las entradas por separado, dejando el `Input` vacío.
+    ///
+    /// Es lo que usa un join: cada puerto se convierte en una tabla distinta.
+    /// Las métricas del nodo se siguen contabilizando.
+    pub fn take_ports(&mut self) -> Vec<InputPort> {
+        self.cursor = 0;
+        std::mem::take(&mut self.ports)
+    }
+
+    pub fn port_names(&self) -> Vec<&str> {
+        self.ports.iter().map(|p| p.name.as_str()).collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.ports.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ports.is_empty()
+    }
+
+    pub fn node(&self) -> &str {
+        &self.node
+    }
+
+    /// `true` si el nodo ya recibió algún batch. El ejecutor lo consulta para
+    /// decidir si un reintento sigue siendo seguro.
     pub fn has_consumed(&self) -> bool {
-        self.consumed.load(Ordering::Acquire)
+        self.counters.touched()
     }
 
     pub fn stats(&self) -> IoStats {
-        IoStats {
-            rows: self.counters.rows.load(Ordering::Relaxed),
-            batches: self.counters.batches.load(Ordering::Relaxed),
-            bytes: self.counters.bytes.load(Ordering::Relaxed),
-        }
+        self.counters.stats()
     }
 }
 
 /// Entrada desconectada, útil para probar sources y para nodos sin aristas.
 pub fn empty_input(node: impl Into<NodeId>) -> Input {
-    Input::new(node, Vec::new(), Vec::new(), Vec::new())
+    Input::new(node, Vec::new(), Vec::new(), Vec::new(), Vec::new())
 }
 
 /// Salida sin consumidores, útil para probar sinks.
@@ -259,6 +336,12 @@ pub fn connected_pair(from: &str, to: &str, capacity: usize) -> (Output, Input) 
     let (_to_tx, to_signal) = watch::channel(NodeSignal::Finished);
     (
         Output::new(from, vec![tx], vec![to.to_string()], vec![to_signal]),
-        Input::new(to, vec![rx], vec![from.to_string()], vec![from_signal]),
+        Input::new(
+            to,
+            vec![rx],
+            vec![from.to_string()],
+            vec![from.to_string()],
+            vec![from_signal],
+        ),
     )
 }

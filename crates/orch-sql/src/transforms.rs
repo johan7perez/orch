@@ -12,8 +12,11 @@
 
 use std::collections::BTreeMap;
 
+use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
-use orch_core::{parse_config, Input, NodeContext, OrchError, Output, Result, Transform};
+use orch_core::{
+    parse_config, Input, InputSchemas, NodeContext, OrchError, Output, Result, Transform,
+};
 use serde::Deserialize;
 
 use crate::engine::{self, Plan};
@@ -30,12 +33,16 @@ fn quote_ident(name: &str) -> String {
 /// Transformación ya reducida a una query.
 pub struct SqlTransform {
     op: &'static str,
+    /// `true` para las operaciones que se escriben sobre una sola tabla.
+    /// `sql` es la excepción: admite varias entradas y por eso puede unir.
+    single_input: bool,
     plan: Plan,
 }
 
 impl SqlTransform {
     fn new(
         op: &'static str,
+        single_input: bool,
         node: &str,
         table: String,
         memory_limit_mb: Option<usize>,
@@ -45,6 +52,7 @@ impl SqlTransform {
         engine::check_syntax(node, &query)?;
         Ok(Self {
             op,
+            single_input,
             plan: Plan::new(node, table, query, memory_limit_mb)?,
         })
     }
@@ -59,6 +67,18 @@ impl SqlTransform {
 impl Transform for SqlTransform {
     fn op(&self) -> &str {
         self.op
+    }
+
+    async fn plan(&self, inputs: &InputSchemas) -> Result<Option<SchemaRef>> {
+        if self.single_input {
+            inputs.require_single(&self.plan.node, self.op)?;
+        } else if inputs.is_empty() {
+            return Err(OrchError::Validation(format!(
+                "`{}`: `sql` necesita al menos una entrada",
+                self.plan.node
+            )));
+        }
+        self.plan.plan_schema(inputs).await
     }
 
     async fn apply(&self, ctx: &NodeContext, input: &mut Input, output: &Output) -> Result<()> {
@@ -92,6 +112,7 @@ pub fn build_sql(node: &str, config: &serde_json::Value) -> Result<SqlTransform>
     }
     SqlTransform::new(
         "sql",
+        false,
         node,
         config.table,
         config.memory_limit_mb,
@@ -123,7 +144,14 @@ pub fn build_filter(node: &str, config: &serde_json::Value) -> Result<SqlTransfo
         quote_ident(&config.table),
         config.predicate
     );
-    SqlTransform::new("filter", node, config.table, config.memory_limit_mb, query)
+    SqlTransform::new(
+        "filter",
+        true,
+        node,
+        config.table,
+        config.memory_limit_mb,
+        query,
+    )
 }
 
 // --- derive -----------------------------------------------------------------
@@ -151,7 +179,14 @@ pub fn build_derive(node: &str, config: &serde_json::Value) -> Result<SqlTransfo
         .collect::<Vec<_>>()
         .join(", ");
     let query = format!("SELECT *, {derived} FROM {}", quote_ident(&config.table));
-    SqlTransform::new("derive", node, config.table, config.memory_limit_mb, query)
+    SqlTransform::new(
+        "derive",
+        true,
+        node,
+        config.table,
+        config.memory_limit_mb,
+        query,
+    )
 }
 
 // --- aggregate --------------------------------------------------------------
@@ -197,6 +232,7 @@ pub fn build_aggregate(node: &str, config: &serde_json::Value) -> Result<SqlTran
 
     SqlTransform::new(
         "aggregate",
+        true,
         node,
         config.table,
         config.memory_limit_mb,

@@ -2,16 +2,20 @@
 //!
 //! Son operaciones de metadatos o de recorte: proyectar, renombrar y limitar
 //! no tocan los buffers de Arrow, sólo reordenan o comparten `Arc`s. Las
-//! transformaciones con expresiones (filtros, agregaciones, joins, SQL) entran
-//! en la Fase 0.2 sobre DataFusion, que reutilizará este mismo trait.
+//! transformaciones con expresiones viven en `orch-sql`, sobre DataFusion.
+//!
+//! Las tres resuelven su esquema de salida en `validate`, así que una columna
+//! mal escrita se detecta antes de leer un solo dato.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use arrow::datatypes::{Field, Schema};
+use arrow::datatypes::{Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use orch_core::{parse_config, Input, NodeContext, OrchError, Output, Registry, Result, Transform};
+use orch_core::{
+    parse_config, Input, InputSchemas, NodeContext, OrchError, Output, Registry, Result, Transform,
+};
 use serde::Deserialize;
 
 pub fn register(registry: &mut Registry) {
@@ -29,9 +33,8 @@ pub fn register(registry: &mut Registry) {
     });
 }
 
-fn available_columns(batch: &RecordBatch) -> String {
-    batch
-        .schema()
+fn column_names(schema: &Schema) -> String {
+    schema
         .fields()
         .iter()
         .map(|f| f.name().as_str())
@@ -60,12 +63,47 @@ impl Select {
             config,
         }
     }
+
+    /// Índices de las columnas pedidas, en el orden en que se pidieron.
+    fn resolve(&self, schema: &Schema) -> Result<Vec<usize>> {
+        self.config
+            .columns
+            .iter()
+            .map(|name| {
+                schema.index_of(name).map_err(|_| {
+                    OrchError::node(
+                        &self.node,
+                        format!(
+                            "la columna `{name}` no existe (disponibles: {})",
+                            column_names(schema)
+                        ),
+                    )
+                })
+            })
+            .collect()
+    }
 }
 
 #[async_trait]
 impl Transform for Select {
     fn op(&self) -> &str {
         "select"
+    }
+
+    async fn plan(&self, inputs: &InputSchemas) -> Result<Option<SchemaRef>> {
+        if self.config.columns.is_empty() {
+            return Err(OrchError::config(
+                &self.node,
+                "`columns` no puede estar vacío",
+            ));
+        }
+        let Some(schema) = inputs.concatenated(&self.node)? else {
+            return Ok(None);
+        };
+        // Resolver aquí los índices convierte "esa columna no existe" en un
+        // error de `validate` en vez de uno a mitad de ejecución.
+        let indices = self.resolve(&schema)?;
+        Ok(Some(Arc::new(schema.project(&indices)?)))
     }
 
     async fn apply(&self, _ctx: &NodeContext, input: &mut Input, output: &Output) -> Result<()> {
@@ -81,23 +119,7 @@ impl Transform for Select {
 
         while let Some(batch) = input.recv().await? {
             if indices.is_none() {
-                indices = Some(
-                    self.config
-                        .columns
-                        .iter()
-                        .map(|name| {
-                            batch.schema().index_of(name).map_err(|_| {
-                                OrchError::node(
-                                    &self.node,
-                                    format!(
-                                        "la columna `{name}` no existe (disponibles: {})",
-                                        available_columns(&batch)
-                                    ),
-                                )
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                );
+                indices = Some(self.resolve(&batch.schema())?);
             }
             let indices = indices.as_deref().expect("resuelto justo arriba");
             output.send(batch.project(indices)?).await?;
@@ -127,6 +149,32 @@ impl Rename {
             config,
         }
     }
+
+    /// Esquema con las columnas renombradas.
+    fn renamed(&self, source: &Schema) -> Result<SchemaRef> {
+        for old in self.config.columns.keys() {
+            if source.index_of(old).is_err() {
+                return Err(OrchError::node(
+                    &self.node,
+                    format!(
+                        "la columna `{old}` no existe (disponibles: {})",
+                        column_names(source)
+                    ),
+                ));
+            }
+        }
+        let fields: Vec<Field> = source
+            .fields()
+            .iter()
+            .map(|field| match self.config.columns.get(field.name()) {
+                Some(new_name) => field.as_ref().clone().with_name(new_name.clone()),
+                None => field.as_ref().clone(),
+            })
+            .collect();
+        Ok(Arc::new(
+            Schema::new(fields).with_metadata(source.metadata().clone()),
+        ))
+    }
 }
 
 #[async_trait]
@@ -135,34 +183,19 @@ impl Transform for Rename {
         "rename"
     }
 
+    async fn plan(&self, inputs: &InputSchemas) -> Result<Option<SchemaRef>> {
+        match inputs.concatenated(&self.node)? {
+            Some(schema) => Ok(Some(self.renamed(&schema)?)),
+            None => Ok(None),
+        }
+    }
+
     async fn apply(&self, _ctx: &NodeContext, input: &mut Input, output: &Output) -> Result<()> {
         let mut renamed_schema = None;
 
         while let Some(batch) = input.recv().await? {
             if renamed_schema.is_none() {
-                let source_schema = batch.schema();
-                for old in self.config.columns.keys() {
-                    if source_schema.index_of(old).is_err() {
-                        return Err(OrchError::node(
-                            &self.node,
-                            format!(
-                                "la columna `{old}` no existe (disponibles: {})",
-                                available_columns(&batch)
-                            ),
-                        ));
-                    }
-                }
-                let fields: Vec<Field> = source_schema
-                    .fields()
-                    .iter()
-                    .map(|field| match self.config.columns.get(field.name()) {
-                        Some(new_name) => field.as_ref().clone().with_name(new_name.clone()),
-                        None => field.as_ref().clone(),
-                    })
-                    .collect();
-                renamed_schema = Some(Arc::new(
-                    Schema::new(fields).with_metadata(source_schema.metadata().clone()),
-                ));
+                renamed_schema = Some(self.renamed(&batch.schema())?);
             }
             let schema = Arc::clone(renamed_schema.as_ref().expect("resuelto justo arriba"));
 
@@ -183,7 +216,6 @@ pub struct LimitConfig {
 }
 
 pub struct Limit {
-    #[allow(dead_code)]
     node: String,
     config: LimitConfig,
 }
@@ -201,6 +233,11 @@ impl Limit {
 impl Transform for Limit {
     fn op(&self) -> &str {
         "limit"
+    }
+
+    /// Recortar filas no cambia las columnas.
+    async fn plan(&self, inputs: &InputSchemas) -> Result<Option<SchemaRef>> {
+        inputs.concatenated(&self.node)
     }
 
     async fn apply(&self, _ctx: &NodeContext, input: &mut Input, output: &Output) -> Result<()> {

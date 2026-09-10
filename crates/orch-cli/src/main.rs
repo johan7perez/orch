@@ -105,7 +105,7 @@ async fn dispatch(command: Command) -> orch_core::Result<ExitCode> {
 
         Command::Validate { pipeline } => {
             let dag = load(&pipeline)?;
-            Executor::new(registry).prepare(&dag)?;
+            Executor::new(registry).prepare(&dag).await?;
             println!(
                 "✓ `{}` es válido: {} nodo(s), {} arista(s)",
                 dag.spec().name,

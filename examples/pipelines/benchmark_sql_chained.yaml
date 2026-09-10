@@ -1,0 +1,56 @@
+# Tres nodos SQL encadenados: filter → derive → aggregate.
+#
+# Cada nodo es un plan de DataFusion independiente, con su propio canal de por
+# medio. Se compara con `benchmark_sql_fused.yaml`, que hace exactamente lo
+# mismo en una sola query, para medir cuánto cuesta NO fusionar.
+#
+#   cargo run --release -p orch-cli -- run examples/pipelines/benchmark_sql_chained.yaml
+
+version: 1
+name: benchmark-sql-encadenado
+description: 10 M de filas por tres nodos SQL separados.
+
+settings:
+  batch_size: 65536
+  channel_capacity: 8
+
+nodes:
+  - id: generar
+    type: source
+    connector: generator
+    config:
+      rows: 10000000
+      with_text: false
+
+  - id: filtrar
+    type: transform
+    op: filter
+    config:
+      where: "id >= 5000000"
+
+  - id: derivar
+    type: transform
+    op: derive
+    config:
+      columns:
+        grupo: "id % 100"
+        ajustado: "value * 1.18"
+
+  - id: agregar
+    type: transform
+    op: aggregate
+    config:
+      group_by: [grupo]
+      aggregates:
+        n: "count(*)"
+        total: "sum(ajustado)"
+
+  - id: descartar
+    type: sink
+    connector: "null"
+
+edges:
+  - { from: generar, to: filtrar }
+  - { from: filtrar, to: derivar }
+  - { from: derivar, to: agregar }
+  - { from: agregar, to: descartar }

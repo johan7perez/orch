@@ -1,0 +1,11 @@
+order_id,customer_id,amount,status
+1001,1,320.50,pagado
+1002,1,120.00,pagado
+1003,2,845.75,pagado
+1004,3,1500.00,pendiente
+1005,3,230.40,pagado
+1006,5,2100.00,pagado
+1007,5,175.25,cancelado
+1008,7,940.00,pagado
+1009,8,60.60,pagado
+1010,99,10.00,pagado

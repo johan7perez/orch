@@ -29,6 +29,7 @@ pub mod event;
 pub mod executor;
 pub mod io;
 pub mod registry;
+pub mod schema;
 pub mod spec;
 
 pub use connector::{NodeContext, Sink, Source, Transform};
@@ -36,8 +37,9 @@ pub use dag::Dag;
 pub use error::{parse_config, OrchError, Result};
 pub use event::RunEvent;
 pub use executor::{Executor, NodeReport, NodeStatus, RunReport};
-pub use io::{Input, IoStats, NodeSignal, Output};
+pub use io::{Input, InputPort, IoStats, NodeSignal, Output};
 pub use registry::Registry;
+pub use schema::{InputSchemas, PortSchema};
 pub use spec::{
     EdgeSpec, NodeId, NodeKind, NodeSpec, PipelineSpec, RetryPolicy, RunSettings, SPEC_VERSION,
 };

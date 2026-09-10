@@ -7,10 +7,12 @@ use std::sync::Arc;
 
 use arrow::csv::reader::{Format, ReaderBuilder};
 use arrow::csv::WriterBuilder;
+use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use orch_core::{
-    parse_config, Input, NodeContext, OrchError, Output, Registry, Result, Sink, Source,
+    parse_config, Input, InputSchemas, NodeContext, OrchError, Output, Registry, Result, Sink,
+    Source,
 };
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -70,6 +72,30 @@ impl Source for CsvSource {
         "csv"
     }
 
+    /// Infiere el esquema leyendo sólo la cabecera y las primeras filas.
+    ///
+    /// Si el fichero todavía no existe se devuelve `None`, no un error: es
+    /// legítimo que lo produzca un paso anterior o una ejecución programada,
+    /// y `validate` no debería exigir que las fuentes estén disponibles.
+    async fn schema(&self) -> Result<Option<SchemaRef>> {
+        let node = self.node.clone();
+        let config = self.config.clone();
+        let inferred = tokio::task::spawn_blocking(move || infer_schema(&node, &config)).await?;
+
+        match inferred {
+            Ok(schema) => Ok(Some(schema)),
+            Err(err) => {
+                tracing::debug!(
+                    node = %self.node,
+                    path = %self.config.path.display(),
+                    error = %err,
+                    "no se pudo inferir el esquema todavía"
+                );
+                Ok(None)
+            }
+        }
+    }
+
     async fn read(&self, ctx: &NodeContext, output: &Output) -> Result<()> {
         let batch_size = self.config.batch_size.unwrap_or(ctx.settings.batch_size);
         if batch_size == 0 {
@@ -104,12 +130,8 @@ impl Source for CsvSource {
     }
 }
 
-fn read_blocking(
-    node: &str,
-    config: &CsvSourceConfig,
-    batch_size: usize,
-    tx: &mpsc::Sender<Result<RecordBatch>>,
-) -> Result<()> {
+/// Abre el fichero y deduce su esquema, dejando el cursor al principio.
+fn open_and_infer(node: &str, config: &CsvSourceConfig) -> Result<(File, Format, SchemaRef)> {
     let mut file = File::open(&config.path).map_err(|e| {
         OrchError::node(
             node,
@@ -133,6 +155,21 @@ fn read_blocking(
     })?;
     file.rewind()?;
 
+    Ok((file, format, Arc::new(schema)))
+}
+
+fn infer_schema(node: &str, config: &CsvSourceConfig) -> Result<SchemaRef> {
+    open_and_infer(node, config).map(|(_, _, schema)| schema)
+}
+
+fn read_blocking(
+    node: &str,
+    config: &CsvSourceConfig,
+    batch_size: usize,
+    tx: &mpsc::Sender<Result<RecordBatch>>,
+) -> Result<()> {
+    let (file, format, schema) = open_and_infer(node, config)?;
+
     tracing::debug!(
         path = %config.path.display(),
         columns = schema.fields().len(),
@@ -140,7 +177,7 @@ fn read_blocking(
         "esquema CSV inferido"
     );
 
-    let reader = ReaderBuilder::new(Arc::new(schema))
+    let reader = ReaderBuilder::new(schema)
         .with_format(format)
         .with_batch_size(batch_size)
         .build(file)
@@ -187,6 +224,13 @@ impl CsvSink {
 impl Sink for CsvSink {
     fn connector(&self) -> &str {
         "csv"
+    }
+
+    /// Un CSV tiene una sola cabecera, así que todas las entradas deben traer
+    /// las mismas columnas. `concatenated` lo comprueba en `validate`, antes
+    /// de crear el fichero.
+    async fn plan(&self, inputs: &InputSchemas) -> Result<()> {
+        inputs.concatenated(&self.node).map(|_| ())
     }
 
     async fn write(&self, _ctx: &NodeContext, input: &mut Input) -> Result<()> {
