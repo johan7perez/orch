@@ -1,0 +1,57 @@
+# Pipeline mínimo: leer un CSV, proyectar y renombrar columnas, escribir otro CSV.
+#
+#   cargo run -p orch-cli -- run examples/pipelines/csv_to_csv.yaml --follow
+#
+# Las rutas son relativas al directorio desde el que se lanza `orch`.
+
+version: 1
+name: clientes-resumen
+description: Extrae nombre y gasto de los clientes y los guarda con cabeceras en español.
+
+settings:
+  # Filas por lote de Arrow. Más grande = menos overhead por lote, más memoria.
+  batch_size: 8192
+  # Lotes en vuelo por arista. Es la palanca de contrapresión: el uso de
+  # memoria queda acotado por batch_size * channel_capacity * nº de aristas.
+  channel_capacity: 4
+
+nodes:
+  - id: leer_clientes
+    type: source
+    connector: csv
+    config:
+      path: examples/data/customers.csv
+      has_header: true
+      delimiter: ","
+      # 0 = escanear el fichero entero para inferir tipos.
+      infer_rows: 1000
+    retry:
+      max_attempts: 3
+      backoff_ms: 250
+
+  - id: seleccionar
+    type: transform
+    op: select
+    config:
+      columns: [name, city, spend]
+
+  - id: renombrar
+    type: transform
+    op: rename
+    config:
+      columns:
+        name: cliente
+        city: ciudad
+        spend: gasto
+
+  - id: escribir_resumen
+    type: sink
+    connector: csv
+    config:
+      path: out/clientes_resumen.csv
+      create_dirs: true
+
+edges:
+  - { from: leer_clientes, to: seleccionar }
+  - { from: seleccionar, to: renombrar }
+  - { from: renombrar, to: escribir_resumen }

@@ -1,0 +1,30 @@
+# Banco de pruebas del motor: origen sintético → destino nulo.
+#
+# Mide el throughput del orquestador aislado de disco y red. Sirve como línea
+# base contra la que comparar cualquier cambio en el ejecutor.
+#
+#   cargo run --release -p orch-cli -- run examples/pipelines/benchmark.yaml
+
+version: 1
+name: benchmark-motor
+description: 10 M de filas del generador al sink nulo, sin tocar disco.
+
+settings:
+  batch_size: 65536
+  channel_capacity: 8
+
+nodes:
+  - id: generar
+    type: source
+    connector: generator
+    config:
+      rows: 10000000
+      # Sin columna de texto: mide el motor, no la asignación de cadenas.
+      with_text: false
+
+  - id: descartar
+    type: sink
+    connector: "null"
+
+edges:
+  - { from: generar, to: descartar }

@@ -1,0 +1,63 @@
+# Un origen alimentando dos destinos, más una rama secundaria que sólo arranca
+# cuando la primera termina (`after`).
+#
+#   cargo run -p orch-cli -- graph examples/pipelines/fan_out.yaml
+#   cargo run -p orch-cli -- run   examples/pipelines/fan_out.yaml --follow
+
+version: 1
+name: clientes-fan-out
+description: Reparte el mismo flujo a dos destinos y encadena una segunda fase.
+
+nodes:
+  - id: leer_clientes
+    type: source
+    connector: csv
+    config:
+      path: examples/data/customers.csv
+
+  # Los batches de Arrow se comparten por puntero: el fan-out no copia datos.
+  - id: copia_completa
+    type: sink
+    connector: csv
+    config:
+      path: out/clientes_copia.csv
+
+  - id: solo_gasto
+    type: transform
+    op: select
+    config:
+      columns: [id, spend]
+
+  - id: escribir_gasto
+    type: sink
+    connector: csv
+    config:
+      path: out/clientes_gasto.csv
+
+  # Segunda fase: no arranca hasta que ambos destinos anteriores han cerrado.
+  - id: muestra
+    type: source
+    connector: generator
+    after: [copia_completa, escribir_gasto]
+    config:
+      rows: 50000
+      with_text: false
+
+  - id: recortar
+    type: transform
+    op: limit
+    config:
+      rows: 100
+
+  - id: escribir_muestra
+    type: sink
+    connector: csv
+    config:
+      path: out/muestra.csv
+
+edges:
+  - { from: leer_clientes, to: copia_completa }
+  - { from: leer_clientes, to: solo_gasto }
+  - { from: solo_gasto, to: escribir_gasto }
+  - { from: muestra, to: recortar }
+  - { from: recortar, to: escribir_muestra }

@@ -1,0 +1,18 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Salidas de ejecuciones de ejemplo
+/out
+/examples/out
+
+# Metadatos/logs embebidos (Fase 0+)
+*.duckdb
+*.duckdb.wal
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
