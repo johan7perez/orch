@@ -44,7 +44,8 @@ pub use pushdown::{PushdownOp, Pushed};
 pub use registry::Registry;
 pub use schema::{InputSchemas, PortSchema};
 pub use spec::{
-    EdgeSpec, NodeId, NodeKind, NodeSpec, PipelineSpec, RetryPolicy, RunSettings, SPEC_VERSION,
+    Concurrency, EdgeSpec, NodeId, NodeKind, NodeSpec, PipelineSpec, RetryPolicy, RunSettings,
+    ScheduleSpec, SPEC_VERSION,
 };
 
 /// Re-exportado para que los conectores no tengan que fijar su propia versión

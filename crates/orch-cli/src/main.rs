@@ -1,5 +1,6 @@
 //! CLI de Orch (Fase 0).
 
+mod daemon;
 mod report;
 mod watch;
 
@@ -57,6 +58,20 @@ enum Command {
         limit: usize,
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
+    },
+    /// Vigila un directorio de pipelines y los dispara cuando toca.
+    Daemon {
+        /// Directorio con los ficheros de pipeline.
+        #[arg(long, default_value = "pipelines")]
+        dir: PathBuf,
+        /// Días de historial a conservar. Sin esto, no se poda nada.
+        #[arg(long)]
+        keep_days: Option<i64>,
+    },
+    /// Borra del historial las ejecuciones más viejas.
+    Prune {
+        #[arg(long, default_value_t = 30)]
+        keep_days: i64,
     },
     /// Detalle de una ejecución: métricas por nodo y eventos.
     ///
@@ -125,6 +140,30 @@ async fn dispatch(command: Command, store_path: &std::path::Path) -> orch_core::
     let registry = full_registry();
 
     match command {
+        Command::Daemon { dir, keep_days } => {
+            daemon::run(
+                registry,
+                daemon::DaemonOptions {
+                    dir,
+                    store: store_path.to_path_buf(),
+                    keep_days,
+                },
+            )
+            .await?;
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Prune { keep_days } => {
+            let store = orch_store::Store::open(store_path)?;
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(keep_days);
+            let removed = store.prune(cutoff)?;
+            println!(
+                "podadas {removed} ejecución(es) anteriores a {}",
+                cutoff.format("%Y-%m-%d")
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+
         Command::Runs { limit, format } => {
             let store = orch_store::Store::open(store_path)?;
             let runs = store.recent_runs(limit)?;
@@ -250,8 +289,8 @@ fn to_json<T: serde::Serialize>(value: &T) -> orch_core::Result<String> {
 ///
 /// La reescritura va antes de construir el DAG, así que lo que se valida y
 /// lo que se ejecuta es siempre el pipeline ya optimizado.
-fn load(
-    path: &PathBuf,
+pub(crate) fn load(
+    path: &std::path::Path,
     registry: &orch_core::Registry,
 ) -> orch_core::Result<(Dag, Vec<orch_core::Pushed>)> {
     let mut spec = PipelineSpec::from_path(path)?;

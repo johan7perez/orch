@@ -4,9 +4,10 @@ Plataforma local de orquestación y transporte de datos. La especificación
 completa está en [doc.md](doc.md); el desglose por fases, en
 [docs/PLAN.md](docs/PLAN.md).
 
-**Estado: Fase 0 en curso.** Motor de DAG, ejecutor asíncrono y CLI
-funcionando sobre conectores CSV y sintéticos. Sin UI, sin Postgres, sin REST
-y sin DuckDB todavía.
+**Estado: Fase 0 completa.** Motor de DAG con ejecución en streaming,
+transformaciones SQL sobre DataFusion, conectores CSV/Parquet/PostgreSQL/REST,
+historial en DuckDB y demonio con disparadores cron. Sin UI todavía: eso es
+la Fase 1.
 
 ---
 
@@ -58,6 +59,9 @@ cargo run -p orch-cli -- run examples/pipelines/csv_to_csv.yaml --follow
 # Historial de ejecuciones, y el detalle de una (basta el prefijo del id)
 cargo run -p orch-cli -- runs
 cargo run -p orch-cli -- logs 2d98
+
+# Demonio: vigila un directorio y dispara lo que toque
+cargo run -p orch-cli -- daemon --dir examples/pipelines --keep-days 30
 
 # Informe en JSON, para encadenar con otras herramientas
 cargo run -p orch-cli -- run examples/pipelines/csv_to_csv.yaml --format json
@@ -138,6 +142,36 @@ edges:
   # Sólo importa en un nodo `sql`, que registra cada puerto como una tabla.
   - { from: otra_rama, to: unir, port: pedidos }
 ```
+
+### Programación
+
+El *cuándo* vive con el *qué*, en el mismo fichero. Sin bloque `schedule`, un
+pipeline sólo corre a mano:
+
+```yaml
+schedule:
+  cron: "30 2 * * 1-5"              # cinco campos, como en Unix
+  timezone: America/Santo_Domingo   # sin esto, UTC
+  after: [otro-pipeline]            # o tras el éxito de otro
+  concurrency: skip                 # skip | queue | allow
+  enabled: true
+```
+
+El cron es el de cinco campos que todo el mundo escribe, **traducido** al de
+seis que usa la librería por debajo — incluida la numeración del día de la
+semana, que allí empieza en 1 y en Unix en 0. Sin esa traducción, un `1-5`
+dispararía de domingo a jueves en vez de lunes a viernes.
+
+`orch daemon --dir <directorio>` valida todos los pipelines al arrancar
+(descubrir a las 3 de la mañana que uno no compila no sirve de nada), rechaza
+nombres duplicados y `after` a pipelines que no existen, y con Ctrl-C deja de
+disparar pero espera a lo que esté en vuelo.
+
+Por defecto, si toca arrancar y la ejecución anterior sigue viva, el disparo
+se salta: un pipeline que tarda más que su intervalo no debe ir acumulando
+copias de sí mismo. Con `queue` se guarda uno —sólo uno, para que un atasco
+de una hora no se convierta en sesenta ejecuciones seguidas— y con `allow`
+arrancan a la vez.
 
 ### Joins
 
@@ -245,6 +279,7 @@ config:
 crates/
   orch-core/         modelo de pipeline, validación del DAG, ejecutor, traits de conector
   orch-store/        historial de ejecuciones y métricas, en DuckDB
+  orch-schedule/     disparadores cron y encadenamiento entre pipelines
   orch-connectors/   implementaciones nativas (CSV, generador, null, transformaciones)
   orch-sql/          transformaciones con expresiones, sobre DataFusion
   orch-rest/         conector HTTP: paginación, límite de tasa, reintentos

@@ -165,7 +165,7 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
   además de `${env:...}`. Credential Manager en Windows, Llavero en macOS,
   Secret Service en Linux.
 
-### 0.4 Persistencia y observabilidad 🚧
+### 0.4 Persistencia y observabilidad ✅
 
 - ✅ DuckDB embebido en el crate `orch-store`: tablas `runs`, `node_runs` y
   `events`, más una vista `node_throughput` con las métricas ya calculadas.
@@ -183,14 +183,36 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
   identificador. El informe señala el nodo con mayor porcentaje de
   ocupación: **es el cuello de botella**, el que marca el ritmo mientras el
   resto le espera.
-- ⬜ Retención: el fichero crece sin límite. Hace falta poder podar
-  ejecuciones viejas.
+- ✅ Retención: `orch prune --keep-days N`, y el demonio poda al arrancar si
+  se le da `--keep-days`.
 
-### 0.5 Programación ⬜
+### 0.5 Programación ✅
 
-- ⬜ Triggers cron y por dependencia entre pipelines.
-- ⬜ Modo `orch daemon`: proceso residente que evalúa triggers.
-- ⬜ Control de concurrencia entre ejecuciones del mismo pipeline.
+- ✅ Bloque `schedule` en el propio pipeline: el cuándo vive con el qué, en
+  un solo fichero. El core sólo guarda la forma; interpretarla es cosa del
+  crate `orch-schedule`, así que el motor no arrastra dependencias de cron.
+- ✅ Cron de cinco campos, el de toda la vida, **traducido** al de seis que
+  espera el crate `cron`. Incluye la numeración del día de la semana: allí
+  1 es domingo y en Unix es 0, así que un `1-5` sin traducir dispararía de
+  domingo a jueves en vez de lunes a viernes. Hay test con fechas reales.
+- ✅ Zonas horarias IANA. Sin indicar, UTC: es lo único que no cambia dos
+  veces al año.
+- ✅ Encadenamiento entre pipelines (`after`), sólo tras un éxito —encadenar
+  tras un fallo propagaría datos a medias— y en cascada.
+- ✅ Control de concurrencia: `skip` (por defecto), `queue` (uno como mucho,
+  para que un atasco de una hora no se convierta en sesenta ejecuciones
+  seguidas) y `allow`.
+- ✅ Una parada larga no provoca una avalancha: al volver, el próximo
+  disparo se recalcula desde ahora y no desde el que se perdió.
+- ✅ `orch daemon --dir <directorio>`: valida todos los pipelines al
+  arrancar —descubrir a las 3 de la mañana que uno no compila no sirve de
+  nada—, rechaza nombres duplicados y `after` a pipelines inexistentes, y al
+  recibir Ctrl-C deja de disparar pero espera a lo que esté en vuelo.
+- ✅ El planificador es puro: se le pregunta qué toca a una hora dada y
+  responde. Todas sus reglas se prueban con fechas escritas a mano, sin
+  esperas reales.
+- ⬜ Reload en caliente: hoy el demonio lee el directorio al arrancar y hay
+  que reiniciarlo para recoger un pipeline nuevo.
 
 ---
 

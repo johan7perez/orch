@@ -298,6 +298,31 @@ impl Store {
             .map_err(|e| failed("no se pudieron leer los eventos", e))
     }
 
+    /// Borra las ejecuciones anteriores a una fecha.
+    ///
+    /// Devuelve cuántas se fueron. Sin esto el fichero crece sin fin, que en
+    /// un demonio que dispara cada minuto se nota en días.
+    pub fn prune(&self, before: DateTime<Utc>) -> Result<usize> {
+        let cutoff = before.timestamp_micros();
+        let conn = self.lock();
+
+        // Los hijos primero: si algo falla a mitad, es preferible dejar
+        // huérfanas un puñado de filas de detalle que ejecuciones sin él.
+        for table in ["node_runs", "events"] {
+            conn.execute(
+                &format!(
+                    "DELETE FROM {table}
+                     WHERE run_id IN (SELECT run_id FROM runs WHERE started_at_us < ?)"
+                ),
+                params![cutoff],
+            )
+            .map_err(|e| failed(&format!("no se pudo podar `{table}`"), e))?;
+        }
+
+        conn.execute("DELETE FROM runs WHERE started_at_us < ?", params![cutoff])
+            .map_err(|e| failed("no se pudieron podar las ejecuciones", e))
+    }
+
     /// Resuelve un prefijo de `run_id` a la ejecución completa.
     ///
     /// Los identificadores son UUID: nadie va a teclear los 36 caracteres.

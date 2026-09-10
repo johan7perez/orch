@@ -1,0 +1,52 @@
+# Un pipeline que se dispara solo.
+#
+# El demonio vigila un directorio entero:
+#
+#   cargo run -p orch-cli -- daemon --dir examples/pipelines --keep-days 30
+#
+# Sin el bloque `schedule`, un pipeline sólo corre a mano. Con él, el demonio
+# lo arranca cuando toca y guarda cada ejecución en el historial.
+
+version: 1
+name: resumen-nocturno
+description: Recalcula el resumen de clientes cada madrugada.
+
+schedule:
+  # Cinco campos, como el cron de toda la vida. Los días de la semana van de
+  # 0 a 6 empezando en domingo, igual que en Unix.
+  cron: "30 2 * * 1-5"
+  # Sin zona, se interpreta en UTC. Aquí no: "las 2:30" tiene que ser las
+  # 2:30 de aquí, no de Greenwich.
+  timezone: America/Santo_Domingo
+  # Si la anterior sigue corriendo, este disparo se salta. Es lo razonable
+  # por defecto: un pipeline que tarda más que su intervalo no debe ir
+  # acumulando copias de sí mismo. Las otras opciones son `queue` y `allow`.
+  concurrency: skip
+  enabled: true
+
+nodes:
+  - id: leer_clientes
+    type: source
+    connector: csv
+    config:
+      path: examples/data/customers.csv
+
+  - id: por_ciudad
+    type: transform
+    op: aggregate
+    config:
+      group_by: [city]
+      aggregates:
+        clientes: "count(*)"
+        gasto: "round(sum(spend)::numeric, 2)"
+
+  - id: escribir
+    type: sink
+    connector: parquet
+    config:
+      path: out/resumen_nocturno.parquet
+      compression: zstd
+
+edges:
+  - { from: leer_clientes, to: por_ciudad }
+  - { from: por_ciudad, to: escribir }

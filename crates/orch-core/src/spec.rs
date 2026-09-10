@@ -21,9 +21,56 @@ pub struct PipelineSpec {
     pub description: Option<String>,
     #[serde(default)]
     pub settings: RunSettings,
+    /// Cuándo debe ejecutarse solo. Sin esto, el pipeline sólo corre a mano.
+    #[serde(default)]
+    pub schedule: Option<ScheduleSpec>,
     pub nodes: Vec<NodeSpec>,
     #[serde(default)]
     pub edges: Vec<EdgeSpec>,
+}
+
+/// Cuándo arranca un pipeline por su cuenta.
+///
+/// El motor no interpreta nada de esto: es el demonio quien lo hace. Aquí
+/// vive sólo la forma, para que `orch validate` la compruebe y para que el
+/// pipeline siga siendo un único fichero.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleSpec {
+    /// Expresión cron. Cinco campos como en Unix (`0 2 * * 1-5`), o seis si
+    /// se quiere precisión de segundos.
+    #[serde(default)]
+    pub cron: Option<String>,
+    /// Zona en la que interpretar el cron (`America/Santo_Domingo`). Por
+    /// defecto UTC, que es lo único que no cambia dos veces al año.
+    #[serde(default)]
+    pub timezone: Option<String>,
+    /// Arranca cuando estos pipelines terminan bien.
+    #[serde(default)]
+    pub after: Vec<String>,
+    /// Qué hacer si toca arrancar y la anterior sigue viva.
+    #[serde(default)]
+    pub concurrency: Concurrency,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Qué hacer cuando un pipeline debe arrancar y ya hay uno suyo corriendo.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Concurrency {
+    /// Saltarse el disparo. Es lo razonable por defecto: un pipeline que
+    /// tarda más que su intervalo no debe ir acumulando copias de sí mismo.
+    #[default]
+    Skip,
+    /// Encolar uno, como mucho. Los disparos siguientes se descartan.
+    Queue,
+    /// Arrancar de todas formas.
+    Allow,
 }
 
 fn default_version() -> u32 {
