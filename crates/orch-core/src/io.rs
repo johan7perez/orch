@@ -11,6 +11,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use arrow::record_batch::RecordBatch;
 use tokio::sync::{mpsc, watch};
@@ -46,6 +47,7 @@ struct Counters {
     rows: AtomicU64,
     batches: AtomicU64,
     bytes: AtomicU64,
+    stalled_nanos: AtomicU64,
     touched: AtomicBool,
 }
 
@@ -59,11 +61,17 @@ impl Counters {
         self.touched.store(true, Ordering::Release);
     }
 
+    fn stalled(&self, elapsed: std::time::Duration) {
+        self.stalled_nanos
+            .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+    }
+
     fn stats(&self) -> IoStats {
         IoStats {
             rows: self.rows.load(Ordering::Relaxed),
             batches: self.batches.load(Ordering::Relaxed),
             bytes: self.bytes.load(Ordering::Relaxed),
+            stalled_ms: self.stalled_nanos.load(Ordering::Relaxed) / 1_000_000,
         }
     }
 
@@ -78,6 +86,13 @@ pub struct IoStats {
     pub rows: u64,
     pub batches: u64,
     pub bytes: u64,
+    /// Tiempo parado esperando al vecino.
+    ///
+    /// En la **salida** es contrapresión: el consumidor no daba abasto. En la
+    /// **entrada** es hambre: el productor no traía datos. El nodo que no
+    /// espera por ningún lado es el cuello de botella, y esta es la cifra que
+    /// lo señala.
+    pub stalled_ms: u64,
 }
 
 /// Aristas salientes de un nodo.
@@ -128,13 +143,27 @@ impl Output {
 
         let mut delivered = 0usize;
         for (i, tx) in self.senders.iter().enumerate() {
-            if tx.is_closed() {
-                self.check_downstream(i)?;
-                continue;
-            }
-            match tx.send(batch.clone()).await {
-                Ok(()) => delivered += 1,
-                Err(_) => self.check_downstream(i)?,
+            // Se intenta sin esperar primero: cuando hay hueco —el caso
+            // normal— no se lee el reloj ni una vez. El coste de medir la
+            // contrapresión sólo se paga cuando de verdad la hay.
+            match tx.try_send(batch.clone()) {
+                Ok(()) => {
+                    delivered += 1;
+                    continue;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    self.check_downstream(i)?;
+                    continue;
+                }
+                Err(mpsc::error::TrySendError::Full(batch)) => {
+                    let waiting = Instant::now();
+                    let outcome = tx.send(batch).await;
+                    self.counters.stalled(waiting.elapsed());
+                    match outcome {
+                        Ok(()) => delivered += 1,
+                        Err(_) => self.check_downstream(i)?,
+                    }
+                }
             }
         }
 
@@ -191,7 +220,20 @@ pub struct InputPort {
 impl InputPort {
     /// Siguiente batch de este puerto, o `None` si terminó bien.
     pub async fn recv(&mut self) -> Result<Option<RecordBatch>> {
-        match self.receiver.recv().await {
+        // Igual que en la salida: si ya hay un lote esperando, no se mide
+        // nada. El reloj sólo entra cuando hay que quedarse esperando.
+        let received = match self.receiver.try_recv() {
+            Ok(batch) => Some(batch),
+            Err(mpsc::error::TryRecvError::Disconnected) => None,
+            Err(mpsc::error::TryRecvError::Empty) => {
+                let waiting = Instant::now();
+                let batch = self.receiver.recv().await;
+                self.counters.stalled(waiting.elapsed());
+                batch
+            }
+        };
+
+        match received {
             Some(batch) => {
                 self.counters.record(&batch);
                 Ok(Some(batch))

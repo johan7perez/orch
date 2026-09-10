@@ -22,6 +22,10 @@ struct Cli {
     #[arg(long, global = true, default_value = "warn")]
     log: String,
 
+    /// Fichero DuckDB donde se guarda el historial de ejecuciones.
+    #[arg(long, global = true, env = "ORCH_STORE", default_value = "orch.duckdb")]
+    store: PathBuf,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -41,9 +45,30 @@ enum Command {
         /// Imprime cada evento de ejecución según ocurre.
         #[arg(long)]
         follow: bool,
+        /// No guarda nada en el historial.
+        #[arg(long)]
+        no_store: bool,
     },
     /// Lista los conectores y transformaciones disponibles.
     Connectors,
+    /// Últimas ejecuciones guardadas.
+    Runs {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+    /// Detalle de una ejecución: métricas por nodo y eventos.
+    ///
+    /// Basta con las primeras letras del identificador.
+    Logs {
+        run_id: String,
+        /// Eventos a mostrar como mucho.
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -67,7 +92,7 @@ fn main() -> ExitCode {
         }
     };
 
-    match runtime.block_on(dispatch(cli.command)) {
+    match runtime.block_on(dispatch(cli.command, &cli.store)) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err}");
@@ -96,10 +121,43 @@ fn full_registry() -> std::sync::Arc<orch_core::Registry> {
     std::sync::Arc::new(registry)
 }
 
-async fn dispatch(command: Command) -> orch_core::Result<ExitCode> {
+async fn dispatch(command: Command, store_path: &std::path::Path) -> orch_core::Result<ExitCode> {
     let registry = full_registry();
 
     match command {
+        Command::Runs { limit, format } => {
+            let store = orch_store::Store::open(store_path)?;
+            let runs = store.recent_runs(limit)?;
+            match format {
+                Format::Text => report::print_runs(&runs),
+                Format::Json => println!("{}", to_json(&runs)?),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Logs {
+            run_id,
+            limit,
+            format,
+        } => {
+            let store = orch_store::Store::open(store_path)?;
+            let run_id = store.resolve_run(&run_id)?;
+            let nodes = store.nodes_of(&run_id)?;
+            let events = store.events_of(&run_id, limit)?;
+            match format {
+                Format::Text => report::print_logs(&run_id, &nodes, &events),
+                Format::Json => println!(
+                    "{}",
+                    to_json(&serde_json::json!({
+                        "run_id": run_id,
+                        "nodes": nodes,
+                        "events": events,
+                    }))?
+                ),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+
         Command::Connectors => {
             report::print_registry(&registry);
             Ok(ExitCode::SUCCESS)
@@ -129,30 +187,50 @@ async fn dispatch(command: Command) -> orch_core::Result<ExitCode> {
             pipeline,
             format,
             follow,
+            no_store,
         } => {
             let (dag, _) = load(&pipeline, &registry)?;
             let executor = Executor::new(registry);
+
             // Suscribirse ANTES de arrancar: el canal es broadcast y los
             // eventos anteriores a la suscripción no se recuperan.
             let watcher = follow.then(|| watch::spawn(executor.subscribe()));
+            let store = if no_store {
+                None
+            } else {
+                Some(std::sync::Arc::new(orch_store::Store::open(store_path)?))
+            };
+            let recorder = store
+                .as_ref()
+                .map(|store| orch_store::EventWriter::spawn(store.clone(), executor.subscribe()));
 
+            let started_at = chrono::Utc::now();
             let result = executor.run(&dag).await;
             // Soltar el ejecutor cierra el canal de eventos: sin esto, un
-            // fallo previo a `RunFinished` dejaría al visor esperando.
+            // fallo previo a `RunFinished` dejaría esperando a los oyentes.
             drop(executor);
 
             if let Some(handle) = watcher {
                 handle.await.ok();
             }
+            // El escritor termina al cerrarse el canal, y vuelca lo que
+            // quede pendiente antes de salir.
+            if let Some(handle) = recorder {
+                handle.await.ok();
+            }
 
             let report = result?;
+            if let Some(store) = &store {
+                // Que falle el historial no puede tumbar una ejecución que
+                // ya movió los datos: se avisa y se sigue.
+                if let Err(err) = store.record_run(&report, started_at) {
+                    eprintln!("aviso: no se pudo guardar la ejecución: {err}");
+                }
+            }
+
             match format {
                 Format::Text => report::print_run(&report),
-                Format::Json => println!(
-                    "{}",
-                    serde_json::to_string_pretty(&report)
-                        .map_err(|e| orch_core::OrchError::Other(e.to_string()))?
-                ),
+                Format::Json => println!("{}", to_json(&report)?),
             }
 
             Ok(if report.succeeded {
@@ -162,6 +240,10 @@ async fn dispatch(command: Command) -> orch_core::Result<ExitCode> {
             })
         }
     }
+}
+
+fn to_json<T: serde::Serialize>(value: &T) -> orch_core::Result<String> {
+    serde_json::to_string_pretty(value).map_err(|e| orch_core::OrchError::Other(e.to_string()))
 }
 
 /// Carga el pipeline y empuja hacia los orígenes lo que acepten.

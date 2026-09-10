@@ -92,6 +92,27 @@ impl Source for EmitsThenFails {
     }
 }
 
+/// Consume despacio, para provocar contrapresión aguas arriba.
+struct SlowSink {
+    per_batch: std::time::Duration,
+    rows: Arc<AtomicU32>,
+}
+
+#[async_trait]
+impl Sink for SlowSink {
+    fn connector(&self) -> &str {
+        "slow"
+    }
+    async fn write(&self, _ctx: &NodeContext, input: &mut Input) -> Result<()> {
+        while let Some(batch) = input.recv().await? {
+            tokio::time::sleep(self.per_batch).await;
+            self.rows
+                .fetch_add(batch.num_rows() as u32, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+}
+
 /// Cuenta las filas recibidas y anota su id al terminar.
 struct Recorder {
     rows: Arc<AtomicU32>,
@@ -177,6 +198,19 @@ fn registry(probe: &Probe) -> Arc<Registry> {
     registry.register_source("emits-then-fails", |_node, _config| {
         let source: Arc<dyn Source> = Arc::new(EmitsThenFails);
         Ok(source)
+    });
+
+    let slow_rows = Arc::clone(&probe.rows);
+    registry.register_sink("slow", move |node, config| {
+        let per_batch = config
+            .get("ms_per_batch")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| OrchError::config(node, "falta `ms_per_batch`"))?;
+        let sink: Arc<dyn Sink> = Arc::new(SlowSink {
+            per_batch: std::time::Duration::from_millis(per_batch),
+            rows: Arc::clone(&slow_rows),
+        });
+        Ok(sink)
     });
 
     let rows = Arc::clone(&probe.rows);
@@ -405,6 +439,69 @@ edges:
     assert_eq!(status_of(&report, "src_b").status, NodeStatus::Skipped);
     assert_eq!(status_of(&report, "sink_b").status, NodeStatus::Skipped);
     assert_eq!(probe.rows(), 0);
+}
+
+#[tokio::test]
+async fn la_contrapresion_queda_medida_en_el_informe() {
+    // El productor va sobrado y el consumidor no da abasto: el tiempo que el
+    // productor pasa esperando es lo que señala dónde está el cuello de
+    // botella, y tiene que quedar registrado.
+    let probe = Probe::default();
+    let report = run(
+        r#"
+name: contrapresion
+settings: { channel_capacity: 1 }
+nodes:
+  - { id: src, type: source, connector: emitter, config: { batches: 6, rows: 10 } }
+  - { id: dst, type: sink, connector: slow, config: { ms_per_batch: 20 } }
+edges:
+  - { from: src, to: dst }
+"#,
+        &probe,
+    )
+    .await;
+
+    assert!(report.succeeded, "{report:?}");
+    assert_eq!(probe.rows(), 60);
+
+    let src = status_of(&report, "src");
+    assert!(
+        src.output.stalled_ms >= 40,
+        "el productor debería haber esperado al consumidor: {} ms",
+        src.output.stalled_ms
+    );
+
+    // El consumidor nunca espera: siempre tiene trabajo pendiente.
+    let dst = status_of(&report, "dst");
+    assert!(
+        dst.input.stalled_ms < src.output.stalled_ms,
+        "el consumidor no debería ser el que espera (in {} ms, out {} ms)",
+        dst.input.stalled_ms,
+        src.output.stalled_ms
+    );
+}
+
+#[tokio::test]
+async fn sin_contrapresion_no_se_contabiliza_espera() {
+    // El camino rápido no debe pagar nada por la instrumentación: si el
+    // consumidor va sobrado, no hay espera que medir.
+    let probe = Probe::default();
+    let report = run(
+        r#"
+name: sin-espera
+settings: { channel_capacity: 16 }
+nodes:
+  - { id: src, type: source, connector: emitter, config: { batches: 4, rows: 10 } }
+  - { id: dst, type: sink, connector: recorder }
+edges:
+  - { from: src, to: dst }
+"#,
+        &probe,
+    )
+    .await;
+
+    assert!(report.succeeded, "{report:?}");
+    assert_eq!(status_of(&report, "src").output.stalled_ms, 0);
 }
 
 #[tokio::test]

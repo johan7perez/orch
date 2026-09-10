@@ -1,0 +1,22 @@
+[package]
+name = "orch-store"
+description = "Persistencia de ejecuciones, métricas y eventos de Orch en DuckDB."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+orch-core.workspace = true
+
+chrono.workspace = true
+duckdb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

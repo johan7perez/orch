@@ -165,14 +165,26 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
   además de `${env:...}`. Credential Manager en Windows, Llavero en macOS,
   Secret Service en Linux.
 
-### 0.4 Persistencia y observabilidad ⬜
+### 0.4 Persistencia y observabilidad 🚧
 
-- ⬜ DuckDB embebido: esquema de `runs`, `node_runs`, `events`, `metrics`.
-- ⬜ Escritor de eventos asíncrono suscrito al canal `broadcast`, con lotes y
-  sin bloquear la ejecución.
-- ⬜ `orch runs` / `orch logs <run_id>` en la CLI.
-- ⬜ Métricas de throughput por nodo (filas/s, bytes/s) y de contrapresión
-  (tiempo bloqueado por arista) — es lo que dirá dónde está el cuello de botella.
+- ✅ DuckDB embebido en el crate `orch-store`: tablas `runs`, `node_runs` y
+  `events`, más una vista `node_throughput` con las métricas ya calculadas.
+  Las migraciones son una lista ordenada y se anota hasta dónde se llegó.
+- ✅ Escritor de eventos en su propia tarea, suscrito al canal `broadcast`,
+  que vuelca en lotes de 256 o cada 200 ms. Nunca frena la ejecución: si se
+  retrasa, el canal descarta eventos y él lo registra. Las escrituras van a
+  un hilo de bloqueo para no ocupar uno del runtime.
+- ✅ Métricas de contrapresión por nodo. `Output::send` y `InputPort::recv`
+  lo intentan primero sin esperar: cuando hay hueco —el caso normal— no se
+  lee el reloj ni una vez, así que medir sólo cuesta cuando de verdad hay
+  espera. En la salida es contrapresión (el consumidor no da abasto) y en la
+  entrada es hambre (el productor no trae datos).
+- ✅ `orch runs` y `orch logs <run_id>`, aceptando un prefijo del
+  identificador. El informe señala el nodo con mayor porcentaje de
+  ocupación: **es el cuello de botella**, el que marca el ritmo mientras el
+  resto le espera.
+- ⬜ Retención: el fichero crece sin límite. Hace falta poder podar
+  ejecuciones viejas.
 
 ### 0.5 Programación ⬜
 

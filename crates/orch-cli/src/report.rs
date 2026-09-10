@@ -151,6 +151,141 @@ pub fn print_run(report: &RunReport) {
     println!("filas escritas: {}", thousands(report.rows_written()));
 }
 
+pub fn print_runs(runs: &[orch_store::RunSummary]) {
+    if runs.is_empty() {
+        println!("no hay ejecuciones guardadas todavía");
+        return;
+    }
+
+    let pipeline_width = runs
+        .iter()
+        .map(|r| r.pipeline.len())
+        .max()
+        .unwrap_or(8)
+        .max(8);
+
+    println!(
+        "  {:<8}  {:<pipeline_width$}  {:<19}  {:<9}  {:>10}  {:>7}",
+        "id",
+        "pipeline",
+        "arrancó",
+        "estado",
+        "duración",
+        "nodos",
+        pipeline_width = pipeline_width
+    );
+    for run in runs {
+        let nodes = if run.failed_nodes > 0 {
+            format!("{}✗/{}", run.failed_nodes, run.nodes)
+        } else {
+            run.nodes.to_string()
+        };
+        println!(
+            "  {:<8}  {:<pipeline_width$}  {:<19}  {:<9}  {:>10}  {:>7}",
+            short_id(&run.run_id),
+            run.pipeline,
+            run.started_at.format("%Y-%m-%d %H:%M:%S"),
+            translate_status(&run.status),
+            human_ms(run.elapsed_ms),
+            nodes,
+            pipeline_width = pipeline_width
+        );
+    }
+}
+
+pub fn print_logs(run_id: &str, nodes: &[orch_store::NodeRow], events: &[orch_store::EventRow]) {
+    println!("run_id : {run_id}");
+    println!();
+
+    let width = nodes.iter().map(|n| n.node.len()).max().unwrap_or(4).max(4);
+    println!(
+        "  {:<width$}  {:<9}  {:>12}  {:>14}  {:>10}  {:>10}",
+        "nodo",
+        "estado",
+        "filas",
+        "filas/s",
+        "tiempo",
+        "ocupado",
+        width = width
+    );
+
+    // El que más tiempo pasa trabajando sin esperar a nadie es el que marca
+    // el ritmo. Se mira en absoluto y no en porcentaje: un nodo que vive
+    // 3 ms sin esperar da 100% y no es el cuello de botella de nada.
+    let bottleneck = nodes
+        .iter()
+        .filter(|n| n.busy_ms > 0)
+        .max_by_key(|n| n.busy_ms)
+        .map(|n| n.node.clone());
+
+    for node in nodes {
+        let moved = if node.kind == "sink" {
+            node.rows_in
+        } else {
+            node.rows_out
+        };
+        let marker = if Some(&node.node) == bottleneck.as_ref() {
+            " ←"
+        } else {
+            ""
+        };
+        println!(
+            "  {:<width$}  {:<9}  {:>12}  {:>14}  {:>10}  {:>10}{}",
+            node.node,
+            translate_status(&node.status),
+            thousands(moved),
+            thousands(node.rows_per_second as u64),
+            human_ms(node.elapsed_ms),
+            format!("{} ({:.0}%)", human_ms(node.busy_ms), node.busy_pct),
+            marker,
+            width = width
+        );
+    }
+    if let Some(node) = &bottleneck {
+        println!();
+        println!("  ← `{node}` es el que marca el ritmo: el resto le espera");
+    }
+
+    let failures: Vec<_> = nodes.iter().filter(|n| n.error.is_some()).collect();
+    if !failures.is_empty() {
+        println!();
+        for node in failures {
+            println!(
+                "  {}: {}",
+                node.node,
+                node.error.as_deref().unwrap_or_default()
+            );
+        }
+    }
+
+    if !events.is_empty() {
+        println!();
+        println!("eventos:");
+        for event in events {
+            println!(
+                "  {}  {:<14} {}",
+                event.at.format("%H:%M:%S%.3f"),
+                event.kind,
+                event.detail.as_deref().unwrap_or("")
+            );
+        }
+    }
+}
+
+fn short_id(run_id: &str) -> &str {
+    &run_id[..run_id.len().min(8)]
+}
+
+fn translate_status(status: &str) -> &str {
+    match status {
+        "succeeded" => "correcto",
+        "failed" => "fallido",
+        "skipped" => "omitido",
+        "running" => "en curso",
+        other => other,
+    }
+}
+
 fn human_ms(ms: u64) -> String {
     if ms < 1_000 {
         format!("{ms} ms")

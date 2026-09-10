@@ -55,6 +55,10 @@ cargo run -p orch-cli -- graph examples/pipelines/csv_to_csv.yaml
 # Ejecutar, con eventos en vivo
 cargo run -p orch-cli -- run examples/pipelines/csv_to_csv.yaml --follow
 
+# Historial de ejecuciones, y el detalle de una (basta el prefijo del id)
+cargo run -p orch-cli -- runs
+cargo run -p orch-cli -- logs 2d98
+
 # Informe en JSON, para encadenar con otras herramientas
 cargo run -p orch-cli -- run examples/pipelines/csv_to_csv.yaml --format json
 ```
@@ -240,6 +244,7 @@ config:
 ```
 crates/
   orch-core/         modelo de pipeline, validación del DAG, ejecutor, traits de conector
+  orch-store/        historial de ejecuciones y métricas, en DuckDB
   orch-connectors/   implementaciones nativas (CSV, generador, null, transformaciones)
   orch-sql/          transformaciones con expresiones, sobre DataFusion
   orch-rest/         conector HTTP: paginación, límite de tasa, reintentos
@@ -304,6 +309,34 @@ es el que está escrito:
 empujado hasta el origen:
   filter de `filtrar` → `leer`
   select de `recortar` → `leer`
+```
+
+**Cada ejecución queda guardada, y el informe dice dónde está el cuello de
+botella.** `Output::send` y `InputPort::recv` intentan primero sin esperar:
+cuando hay hueco —el caso normal— no se lee el reloj ni una vez, así que
+medir sólo cuesta cuando de verdad hay espera. En la salida esa espera es
+contrapresión (el consumidor no da abasto) y en la entrada es hambre (el
+productor no trae datos). El nodo que más tiempo pasa **sin** esperar a nadie
+es el que marca el ritmo:
+
+```
+  nodo      estado            filas         filas/s      tiempo     ocupado
+  generar   correcto      3 000 000       7 352 941      408 ms   7 ms (2%)
+  escribir  correcto      3 000 000       7 142 857      420 ms  420 ms (100%) ←
+
+  ← `escribir` es el que marca el ritmo: el resto le espera
+```
+
+El generador pasó 401 de sus 408 ms bloqueado esperando al CSV. Se mira en
+absoluto y no en porcentaje: un nodo que vive 3 ms sin esperar da 100% y no
+es el cuello de botella de nada.
+
+El historial vive en un fichero DuckDB (`orch.duckdb`, o `--store`), así que
+se puede consultar directamente:
+
+```sql
+SELECT pipeline, avg(elapsed_ms) FROM run_history
+WHERE started_at > now() - INTERVAL 7 DAY GROUP BY 1;
 ```
 
 **Los esquemas se propagan en `validate`.** Los orígenes declaran qué columnas

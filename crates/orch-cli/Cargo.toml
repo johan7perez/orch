@@ -17,6 +17,10 @@ orch-connectors.workspace = true
 orch-sql.workspace = true
 orch-rest.workspace = true
 orch-postgres.workspace = true
+orch-store.workspace = true
+
+chrono.workspace = true
+serde.workspace = true
 
 clap.workspace = true
 serde_json.workspace = true
