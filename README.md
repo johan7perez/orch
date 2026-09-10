@@ -152,6 +152,7 @@ Ejemplo completo en [examples/pipelines/join.yaml](examples/pipelines/join.yaml)
 |---|---|---|
 | source | `csv` | `path`, `has_header`, `delimiter`, `infer_rows` (0 = fichero entero), `batch_size` |
 | source | `parquet` | `path`, `columns` (proyección empujada al fichero), `batch_size` |
+| source | `rest` | `url`, `headers`, `query`, `records_path`, `pagination`, `schema`, `retry`, `rate_limit_per_second` |
 | source | `generator` | `rows`, `with_text`, `batch_size` — datos sintéticos deterministas |
 | transform | `select` | `columns: [..]` — proyecta y reordena |
 | transform | `rename` | `columns: { viejo: nuevo }` |
@@ -162,7 +163,13 @@ Ejemplo completo en [examples/pipelines/join.yaml](examples/pipelines/join.yaml)
 | transform | `sql` | `query` — SQL libre sobre la entrada |
 | sink | `csv` | `path`, `has_header`, `delimiter`, `create_dirs` |
 | sink | `parquet` | `path`, `compression` (`snappy`/`zstd`/`gzip`/`lz4`/`none`), `row_group_size`, `create_dirs` |
+| sink | `rest` | `url`, `method`, `headers`, `rows_per_request`, `body` (`json_array`/`ndjson`), `wrap_in`, `retry` |
 | sink | `null` | descarta; para dry-runs y benchmarks |
+
+El conector REST reintenta sólo los códigos transitorios (408, 429, 5xx) y
+respeta `Retry-After`: un 401 no mejora repitiéndolo. Pagina por número de
+página, por offset o por cursor, y `max_pages` frena una API que nunca dice
+que se acabó. Las cabeceras no aparecen en los logs, porque llevan tokens.
 
 ### Secretos
 
@@ -189,6 +196,7 @@ crates/
   orch-core/         modelo de pipeline, validación del DAG, ejecutor, traits de conector
   orch-connectors/   implementaciones nativas (CSV, generador, null, transformaciones)
   orch-sql/          transformaciones con expresiones, sobre DataFusion
+  orch-rest/         conector HTTP: paginación, límite de tasa, reintentos
   orch-cli/          binario `orch`
 ```
 

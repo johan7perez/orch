@@ -87,10 +87,11 @@ fn init_tracing(level: &str) {
         .init();
 }
 
-/// Todo lo que el binario sabe ejecutar: conectores nativos + SQL.
+/// Todo lo que el binario sabe ejecutar.
 fn full_registry() -> std::sync::Arc<orch_core::Registry> {
     let mut registry = orch_connectors::default_registry();
     orch_sql::register(&mut registry);
+    orch_rest::register(&mut registry);
     std::sync::Arc::new(registry)
 }
 

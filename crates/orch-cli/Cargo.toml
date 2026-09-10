@@ -15,6 +15,7 @@ path = "src/main.rs"
 orch-core.workspace = true
 orch-connectors.workspace = true
 orch-sql.workspace = true
+orch-rest.workspace = true
 
 clap.workspace = true
 serde_json.workspace = true

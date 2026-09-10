@@ -99,8 +99,15 @@ Leyenda: ✅ hecho · 🚧 en curso · ⬜ pendiente
   posterior a un origen se traduzca en leer menos. Es donde de verdad está la
   ganancia que un planificador global habría dado (ver 0.2), y se consigue
   sin acoplar el motor a DataFusion.
-- ⬜ **REST** origen y destino: paginación, límite de tasa, reintentos por
-  código de estado.
+- ✅ **REST** origen y destino, en el crate `orch-rest`. Paginación por
+  número de página, por offset y por cursor, con `max_pages` como freno.
+  Reintentos sólo en códigos transitorios (408, 429, 5xx): un 401 no mejora
+  repitiéndolo. Se respeta `Retry-After`. Límite de tasa configurable. El
+  destino trocea los lotes en peticiones de N filas. Las cabeceras nunca se
+  registran en los logs.
+  - El esquema hay que declararlo para que llegue a `validate`: llamar a una
+    API durante la validación tendría efectos secundarios. Sin declararlo se
+    deduce de la primera página.
 - ⬜ Almacén de secretos del sistema operativo (`${keyring:...}`), además de
   las variables de entorno.
 

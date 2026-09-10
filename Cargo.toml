@@ -4,6 +4,7 @@ members = [
     "crates/orch-core",
     "crates/orch-connectors",
     "crates/orch-sql",
+    "crates/orch-rest",
     "crates/orch-cli",
 ]
 
@@ -18,6 +19,7 @@ repository = "https://github.com/johanperez/orch"
 orch-core = { path = "crates/orch-core", version = "0.0.1" }
 orch-connectors = { path = "crates/orch-connectors", version = "0.0.1" }
 orch-sql = { path = "crates/orch-sql", version = "0.0.1" }
+orch-rest = { path = "crates/orch-rest", version = "0.0.1" }
 
 arrow = "59"
 async-trait = "0.1"
@@ -27,6 +29,8 @@ datafusion = "55"
 futures = "0.3"
 # Va emparejado con `arrow`: son el mismo repositorio y la misma versión.
 parquet = "59"
+# TLS por defecto = schannel en Windows: sin dependencias externas que compilar.
+reqwest = { version = "0.13", features = ["json"] }
 tokio-stream = "0.1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
