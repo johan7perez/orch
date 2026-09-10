@@ -11,6 +11,7 @@ pub mod csv;
 pub mod generator;
 pub mod memory;
 pub mod null;
+pub mod parquet;
 pub mod transforms;
 
 mod util;
@@ -25,6 +26,7 @@ pub fn default_registry() -> Registry {
     csv::register(&mut registry);
     generator::register(&mut registry);
     null::register(&mut registry);
+    parquet::register(&mut registry);
     transforms::register(&mut registry);
     registry
 }

@@ -1,0 +1,55 @@
+# CSV a Parquet, y vuelta leyendo sólo dos columnas.
+#
+#   cargo run -p orch-cli -- run examples/pipelines/parquet.yaml --follow
+#
+# Parquet es el formato donde Arrow rinde mejor: columnar en disco y columnar
+# en memoria, sin conversión de por medio. Y trae el esquema en el pie, así que
+# `orch validate` conoce los tipos exactos sin leer una sola fila.
+
+version: 1
+name: clientes-parquet
+description: Convierte el CSV de clientes a Parquet y extrae un resumen.
+
+nodes:
+  - id: leer_csv
+    type: source
+    connector: csv
+    config:
+      path: examples/data/customers.csv
+
+  - id: escribir_parquet
+    type: sink
+    connector: parquet
+    config:
+      path: out/customers.parquet
+      compression: zstd
+      row_group_size: 100000
+
+  # Segunda fase: no arranca hasta que el Parquet está cerrado con su pie.
+  - id: releer
+    type: source
+    connector: parquet
+    after: [escribir_parquet]
+    config:
+      path: out/customers.parquet
+      # Proyección empujada al fichero: `name` y `spend` ni se descomprimen.
+      columns: [city, segment]
+
+  - id: por_segmento
+    type: transform
+    op: aggregate
+    config:
+      group_by: [city, segment]
+      aggregates:
+        clientes: "count(*)"
+
+  - id: escribir_resumen
+    type: sink
+    connector: csv
+    config:
+      path: out/clientes_por_segmento.csv
+
+edges:
+  - { from: leer_csv, to: escribir_parquet }
+  - { from: releer, to: por_segmento }
+  - { from: por_segmento, to: escribir_resumen }

@@ -30,6 +30,7 @@ pub mod executor;
 pub mod io;
 pub mod registry;
 pub mod schema;
+pub mod secrets;
 pub mod spec;
 
 pub use connector::{NodeContext, Sink, Source, Transform};

@@ -82,7 +82,16 @@ Leyenda: ✅ hecho · 🚧 en curso · ⬜ pendiente
   espiar varios puertos en serie podría bloquear el pipeline si comparten un
   origen aguas arriba. Se resolvería espiándolos en paralelo.
 
-### 0.3 Conectores restantes de la Fase 0 ⬜
+### 0.3 Conectores restantes de la Fase 0 🚧
+
+- ✅ **Parquet** origen y destino. El esquema sale del pie del fichero, con
+  los tipos reales en vez de inferidos, así que `validate` lo conoce siempre.
+  `columns:` empuja la proyección al lector: las columnas que no se piden ni
+  se descomprimen. El destino escribe un fichero legible aunque no llegue
+  ninguna fila, porque el esquema viene propagado desde `prepare`.
+- ✅ **Secretos fuera del YAML**: `${env:NOMBRE}` en cualquier cadena de la
+  config, resuelto al cargar para que una variable ausente se note en
+  `validate`. Un esquema desconocido es un error, no un literal.
 
 - ⬜ **Postgres** origen y destino (`tokio-postgres`): lectura por cursor en
   streaming, escritura con `COPY BINARY` — nunca `INSERT` fila a fila.
@@ -92,10 +101,8 @@ Leyenda: ✅ hecho · 🚧 en curso · ⬜ pendiente
   sin acoplar el motor a DataFusion.
 - ⬜ **REST** origen y destino: paginación, límite de tasa, reintentos por
   código de estado.
-- ⬜ **Parquet** origen y destino: es el formato donde Arrow rinde mejor y el
-  que hace comparables los benchmarks con otras herramientas.
-- ⬜ Gestión de credenciales fuera del YAML (variables de entorno / almacén
-  del sistema operativo).
+- ⬜ Almacén de secretos del sistema operativo (`${keyring:...}`), además de
+  las variables de entorno.
 
 ### 0.4 Persistencia y observabilidad ⬜
 

@@ -25,6 +25,8 @@ async-trait = "0.1"
 # de Arrow en todo el workspace. Si se sube `arrow`, hay que subir esto a la vez.
 datafusion = "55"
 futures = "0.3"
+# Va emparejado con `arrow`: son el mismo repositorio y la misma versión.
+parquet = "59"
 tokio-stream = "0.1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

@@ -32,10 +32,31 @@ fn default_version() -> u32 {
 
 impl PipelineSpec {
     pub fn from_yaml_str(path: &str, yaml: &str) -> crate::Result<Self> {
-        serde_yaml::from_str(yaml).map_err(|source| crate::OrchError::SpecParse {
-            path: path.to_string(),
-            source,
-        })
+        // Los editores de Windows guardan UTF-8 con BOM y serde_yaml lo trata
+        // como parte del primer nombre de campo, con un error incomprensible.
+        let yaml = yaml.strip_prefix('\u{feff}').unwrap_or(yaml);
+
+        let mut spec: Self =
+            serde_yaml::from_str(yaml).map_err(|source| crate::OrchError::SpecParse {
+                path: path.to_string(),
+                source,
+            })?;
+        spec.expand_secrets()?;
+        Ok(spec)
+    }
+
+    /// Resuelve las referencias `${env:...}` de la config de cada nodo.
+    ///
+    /// Se hace al cargar, no al ejecutar, para que un secreto que falta se
+    /// note en `orch validate` y no a mitad de un pipeline.
+    pub fn expand_secrets(&mut self) -> crate::Result<()> {
+        for node in &mut self.nodes {
+            let (NodeKind::Source { config, .. }
+            | NodeKind::Transform { config, .. }
+            | NodeKind::Sink { config, .. }) = &mut node.kind;
+            crate::secrets::expand_value(&node.id, config)?;
+        }
+        Ok(())
     }
 
     pub fn from_path(path: impl AsRef<std::path::Path>) -> crate::Result<Self> {

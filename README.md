@@ -77,6 +77,14 @@ Es el techo del orquestador sin I/O; cualquier cambio en el ejecutor debería
 compararse contra estas cifras. El nodo de DataFusion añade ~11 ms sobre 10 M
 de filas (~1 ns/fila) y no materializa nada.
 
+Tamaño en disco del mismo millón de filas del generador:
+
+| Formato | Tamaño |
+|---|---|
+| CSV | 25,8 MB |
+| Parquet (snappy) | 13,3 MB |
+| Parquet (zstd) | **3,2 MB** |
+
 Logs detallados: `$env:ORCH_LOG = "orch_core=debug,orch_connectors=debug"`.
 
 `orch run` devuelve código de salida 0 sólo si todos los nodos terminaron
@@ -143,6 +151,7 @@ Ejemplo completo en [examples/pipelines/join.yaml](examples/pipelines/join.yaml)
 | Tipo | Nombre | Config |
 |---|---|---|
 | source | `csv` | `path`, `has_header`, `delimiter`, `infer_rows` (0 = fichero entero), `batch_size` |
+| source | `parquet` | `path`, `columns` (proyección empujada al fichero), `batch_size` |
 | source | `generator` | `rows`, `with_text`, `batch_size` — datos sintéticos deterministas |
 | transform | `select` | `columns: [..]` — proyecta y reordena |
 | transform | `rename` | `columns: { viejo: nuevo }` |
@@ -152,7 +161,26 @@ Ejemplo completo en [examples/pipelines/join.yaml](examples/pipelines/join.yaml)
 | transform | `aggregate` | `group_by: [..]`, `aggregates: { alias: "sum(x)" }` |
 | transform | `sql` | `query` — SQL libre sobre la entrada |
 | sink | `csv` | `path`, `has_header`, `delimiter`, `create_dirs` |
+| sink | `parquet` | `path`, `compression` (`snappy`/`zstd`/`gzip`/`lz4`/`none`), `row_group_size`, `create_dirs` |
 | sink | `null` | descarta; para dry-runs y benchmarks |
+
+### Secretos
+
+Una contraseña no debe vivir en el YAML, que se versiona y se comparte. En su
+lugar se escribe una referencia, que se resuelve **al cargar el pipeline** —
+así una variable que falta se nota en `orch validate` y no a mitad de una
+ejecución:
+
+```yaml
+config:
+  dsn: "postgres://app:${env:PGPASSWORD}@localhost/ventas"
+```
+
+Sólo `${env:NOMBRE}` está soportado hoy; el formato deja sitio para otros
+orígenes. Un esquema mal escrito (`${ENV:X}`) es un error, no un literal: si
+pasara tal cual a una cadena de conexión, el fallo sería incomprensible. Un
+`${...}` sin esquema (`${HOME}`) sí se deja literal, por si lo interpreta el
+destino.
 
 ## Arquitectura
 
