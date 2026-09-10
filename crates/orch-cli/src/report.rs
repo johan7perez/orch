@@ -1,11 +1,27 @@
 //! Salida legible de la CLI.
 
-use orch_core::{Dag, NodeStatus, Registry, RunReport};
+use orch_core::{Dag, NodeStatus, Pushed, Registry, RunReport};
 
 pub fn print_registry(registry: &Registry) {
     print_list("sources", &registry.source_names());
     print_list("transforms", &registry.transform_names());
     print_list("sinks", &registry.sink_names());
+    print_list("con pushdown", &registry.pushdown_names());
+}
+
+/// Qué trabajo se empujó hasta el origen.
+///
+/// Se muestra siempre que ocurra: el pipeline que se ejecuta ya no es el que
+/// está escrito en el YAML, y eso hay que decirlo.
+pub fn print_pushdown(pushed: &[Pushed]) {
+    if pushed.is_empty() {
+        return;
+    }
+    println!();
+    println!("empujado hasta el origen:");
+    for item in pushed {
+        println!("  {} de `{}` → `{}`", item.op, item.removed, item.into);
+    }
 }
 
 fn print_list(title: &str, names: &[&str]) {

@@ -21,6 +21,7 @@ pub struct Registry {
     sources: BTreeMap<String, SourceFactory>,
     transforms: BTreeMap<String, TransformFactory>,
     sinks: BTreeMap<String, SinkFactory>,
+    pushdown: BTreeMap<String, crate::pushdown::PushdownHandler>,
 }
 
 impl std::fmt::Debug for Registry {
@@ -60,6 +61,30 @@ impl Registry {
     {
         self.sinks.insert(name.into(), Box::new(factory));
         self
+    }
+
+    /// Declara qué operaciones del nodo siguiente sabe absorber un origen.
+    ///
+    /// El manejador recibe la config del origen y la operación, y devuelve
+    /// `true` si la aceptó, dejando la config ya modificada.
+    pub fn register_pushdown<F>(&mut self, connector: impl Into<String>, handler: F) -> &mut Self
+    where
+        F: Fn(&mut Value, &crate::pushdown::PushdownOp) -> bool + Send + Sync + 'static,
+    {
+        self.pushdown.insert(connector.into(), Box::new(handler));
+        self
+    }
+
+    pub(crate) fn pushdown_handler(
+        &self,
+        connector: &str,
+    ) -> Option<&crate::pushdown::PushdownHandler> {
+        self.pushdown.get(connector)
+    }
+
+    /// Conectores que aceptan que se les empuje trabajo.
+    pub fn pushdown_names(&self) -> Vec<&str> {
+        self.pushdown.keys().map(String::as_str).collect()
     }
 
     pub fn source_names(&self) -> Vec<&str> {

@@ -82,7 +82,7 @@ Leyenda: ✅ hecho · 🚧 en curso · ⬜ pendiente
   espiar varios puertos en serie podría bloquear el pipeline si comparten un
   origen aguas arriba. Se resolvería espiándolos en paralelo.
 
-### 0.3 Conectores restantes de la Fase 0 🚧
+### 0.3 Conectores restantes de la Fase 0 ✅
 
 Los tests de PostgreSQL necesitan un servidor. Si no hay ninguno accesible se
 saltan con un aviso en vez de fallar, para que el repositorio siga siendo
@@ -131,10 +131,27 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
   lo que no encajara, que en datos de dinero es inaceptable. El texto da la
   vuelta sin perder nada; hay test con 20 dígitos y seis decimales. Por
   encima de 28 dígitos significativos el error dice que se use `round()`.
-- ⬜ **Pushdown por conector**: que un `filter` o un `select` inmediatamente
-  posterior a un origen se traduzca en leer menos. Es donde de verdad está la
-  ganancia que un planificador global habría dado (ver 0.2), y se consigue
-  sin acoplar el motor a DataFusion.
+- ✅ **Pushdown por conector.** Un `filter` o un `select` pegado a un origen
+  se absorbe en su config y el nodo desaparece. Es la ganancia que un
+  planificador global habría dado, conseguida sin acoplar el motor a
+  DataFusion: la reescritura es un paso sobre el `PipelineSpec`, antes de
+  construir el DAG, y el ejecutor no se entera.
+  - `postgres` absorbe ambos, con la forma `table`; el `WHERE` lo resuelve el
+    servidor y por la red viaja sólo el resultado. Dos filtros encadenados se
+    unen con `AND`. Con `query` propia no se toca nada: envolverla en una
+    subconsulta cambiaría cómo la planifica PostgreSQL.
+  - `parquet` absorbe el `select`: las columnas que no se piden ni se
+    descomprimen. Para que fuera exacto hubo que hacer que `columns` respete
+    el orden pedido y no el del fichero.
+  - Sólo se empuja si el origen tiene **un único consumidor**: con más,
+    recortarle columnas o filas cambiaría lo que ven los demás. Tampoco si el
+    nodo tiene una barrera `after` o si alguien depende de él.
+  - `orch graph` y `orch validate` dicen qué se empujó: el pipeline que se
+    ejecuta ya no es el que está escrito.
+  - Medido sobre una tabla de 1 M de filas con un filtro que deja 1 000:
+    **1,16 s → 127 ms**, y de 1 000 000 de filas por la red a 1 000. Nueve
+    veces, frente al cero que dio fusionar transformaciones en 0.2. Ahí
+    estaba la ganancia.
 - ✅ **REST** origen y destino, en el crate `orch-rest`. Paginación por
   número de página, por offset y por cursor, con `max_pages` como freno.
   Reintentos sólo en códigos transitorios (408, 429, 5xx): un 401 no mejora

@@ -5,8 +5,11 @@ use std::sync::Arc;
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use orch_core::{parse_config, NodeContext, OrchError, Output, Registry, Result, Source};
+use orch_core::{
+    parse_config, NodeContext, OrchError, Output, PushdownOp, Registry, Result, Source,
+};
 use serde::Deserialize;
+use serde_json::json;
 use tokio_postgres::Statement;
 
 use crate::conn::{connect, describe, quote_ident, quote_qualified, TlsConfig};
@@ -17,6 +20,43 @@ pub fn register(registry: &mut Registry) {
         let source: Arc<dyn Source> =
             Arc::new(PostgresSource::new(node, parse_config(node, config)?)?);
         Ok(source)
+    });
+
+    // Lo que se empuja aquí lo resuelve el servidor, y por la red viaja sólo
+    // el resultado. Es el salto que más se nota de todos.
+    //
+    // Sólo con la forma `table`: con `query` habría que envolverla en una
+    // subconsulta y eso cambia cómo la planifica PostgreSQL. Quien escribe
+    // su propio SQL ya puede poner ahí el WHERE.
+    registry.register_pushdown("postgres", |config, op| {
+        let Some(map) = config.as_object_mut() else {
+            return false;
+        };
+        if !map.get("table").is_some_and(|t| t.is_string()) {
+            return false;
+        }
+
+        match op {
+            PushdownOp::Select { columns } => {
+                if map.get("columns").is_some_and(|c| !c.is_null()) {
+                    return false;
+                }
+                map.insert("columns".to_string(), json!(columns));
+                true
+            }
+            PushdownOp::Filter { predicate } => {
+                // Dos filtros se combinan con AND, que es justo lo que
+                // significaba encadenarlos.
+                let combined = match map.get("where").and_then(|w| w.as_str()) {
+                    Some(existing) if !existing.trim().is_empty() => {
+                        format!("({existing}) AND ({predicate})")
+                    }
+                    _ => predicate.clone(),
+                };
+                map.insert("where".to_string(), json!(combined));
+                true
+            }
+        }
     });
 }
 

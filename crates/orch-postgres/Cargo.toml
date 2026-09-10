@@ -28,5 +28,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 orch-connectors.workspace = true
+# Para comparar el `filter` de DataFusion con el mismo filtro empujado al
+# servidor: sin él, el pipeline «sin empujar» no se podría ni construir.
+orch-sql.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

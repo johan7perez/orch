@@ -17,14 +17,15 @@ use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use orch_core::{
-    parse_config, Input, InputSchemas, NodeContext, OrchError, Output, Registry, Result, Sink,
-    Source,
+    parse_config, Input, InputSchemas, NodeContext, OrchError, Output, PushdownOp, Registry,
+    Result, Sink, Source,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::{ArrowWriter, ProjectionMask};
 use parquet::basic::{Compression, GzipLevel, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use serde::Deserialize;
+use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::util::yes;
@@ -38,6 +39,25 @@ pub fn register(registry: &mut Registry) {
     registry.register_sink("parquet", |node, config| {
         let sink: Arc<dyn Sink> = Arc::new(ParquetSink::new(node, parse_config(node, config)?));
         Ok(sink)
+    });
+
+    // Un `select` justo detrás se convierte en no leer esas columnas. Un
+    // `filter` no: Parquet puede saltarse grupos de filas por estadísticas,
+    // pero eso exige evaluar la expresión y todavía no se hace.
+    registry.register_pushdown("parquet", |config, op| {
+        let PushdownOp::Select { columns } = op else {
+            return false;
+        };
+        // Si ya venía con una proyección, la del `select` tiene que ser un
+        // subconjunto suyo; comprobarlo aquí es más lío que dejarlo estar.
+        if config.get("columns").is_some_and(|c| !c.is_null()) {
+            return false;
+        }
+        let Some(map) = config.as_object_mut() else {
+            return false;
+        };
+        map.insert("columns".to_string(), json!(columns));
+        true
     });
 }
 
@@ -72,30 +92,37 @@ impl ParquetSource {
     }
 }
 
-/// Índices de las columnas pedidas, en orden de fichero y sin repetidos.
-fn projected_indices(node: &str, schema: &Schema, columns: &[String]) -> Result<Vec<usize>> {
-    let mut indices = Vec::with_capacity(columns.len());
-    for name in columns {
-        let index = schema.index_of(name).map_err(|_| {
-            OrchError::node(
-                node,
-                format!(
-                    "la columna `{name}` no existe en el fichero (disponibles: {})",
-                    schema
-                        .fields()
-                        .iter()
-                        .map(|f| f.name().as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            )
-        })?;
-        if !indices.contains(&index) {
-            indices.push(index);
-        }
-    }
-    indices.sort_unstable();
-    Ok(indices)
+/// Cómo se recorta y se ordena lo que sale del fichero.
+struct Projection {
+    /// Esquema que produce el nodo, ya en el orden pedido.
+    schema: SchemaRef,
+    /// Reordenación a aplicar a cada lote, si el orden pedido no coincide
+    /// con el del fichero. El lector siempre devuelve las columnas en el
+    /// orden en que están escritas.
+    reorder: Option<Vec<usize>>,
+}
+
+/// Índices de las columnas pedidas, en el orden en que se pidieron.
+fn requested_indices(node: &str, schema: &Schema, columns: &[String]) -> Result<Vec<usize>> {
+    columns
+        .iter()
+        .map(|name| {
+            schema.index_of(name).map_err(|_| {
+                OrchError::node(
+                    node,
+                    format!(
+                        "la columna `{name}` no existe en el fichero (disponibles: {})",
+                        schema
+                            .fields()
+                            .iter()
+                            .map(|f| f.name().as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )
+            })
+        })
+        .collect()
 }
 
 /// Abre el fichero y lee su pie de metadatos.
@@ -122,21 +149,50 @@ fn open_builder(
     })
 }
 
-/// Aplica la proyección y devuelve el esquema que va a producir.
+/// Aplica la proyección y devuelve cómo queda la salida.
 fn project(
     node: &str,
     mut builder: ParquetRecordBatchReaderBuilder<File>,
     config: &ParquetSourceConfig,
-) -> Result<(ParquetRecordBatchReaderBuilder<File>, SchemaRef)> {
+) -> Result<(ParquetRecordBatchReaderBuilder<File>, Projection)> {
     let file_schema = SchemaRef::clone(builder.schema());
     let Some(columns) = &config.columns else {
-        return Ok((builder, file_schema));
+        return Ok((
+            builder,
+            Projection {
+                schema: file_schema,
+                reorder: None,
+            },
+        ));
     };
 
-    let indices = projected_indices(node, &file_schema, columns)?;
-    let mask = ProjectionMask::roots(builder.parquet_schema(), indices.iter().copied());
+    let requested = requested_indices(node, &file_schema, columns)?;
+
+    // La máscara del lector no entiende de orden ni de repeticiones: se le
+    // pasa el conjunto, y luego se reordena el lote.
+    let mut read: Vec<usize> = requested.clone();
+    read.sort_unstable();
+    read.dedup();
+
+    let mask = ProjectionMask::roots(builder.parquet_schema(), read.iter().copied());
     builder = builder.with_projection(mask);
-    Ok((builder, Arc::new(file_schema.project(&indices)?)))
+
+    let reorder: Vec<usize> = requested
+        .iter()
+        .map(|index| {
+            read.binary_search(index)
+                .expect("cada columna pedida está en el conjunto leído")
+        })
+        .collect();
+    let identity = reorder.iter().copied().eq(0..read.len());
+
+    Ok((
+        builder,
+        Projection {
+            schema: Arc::new(file_schema.project(&requested)?),
+            reorder: (!identity).then_some(reorder),
+        },
+    ))
 }
 
 #[async_trait]
@@ -151,7 +207,9 @@ impl Source for ParquetSource {
         let node = self.node.clone();
         let config = self.config.clone();
         tokio::task::spawn_blocking(move || match open_builder(&node, &config) {
-            Ok(builder) => project(&node, builder, &config).map(|(_, schema)| Some(schema)),
+            Ok(builder) => {
+                project(&node, builder, &config).map(|(_, projection)| Some(projection.schema))
+            }
             Err(err) => {
                 tracing::debug!(
                     node = %node,
@@ -200,10 +258,10 @@ fn read_blocking(
     batch_size: usize,
     tx: &mpsc::Sender<Result<RecordBatch>>,
 ) -> Result<()> {
-    let (builder, schema) = project(node, open_builder(node, config)?, config)?;
+    let (builder, projection) = project(node, open_builder(node, config)?, config)?;
     tracing::debug!(
         path = %config.path.display(),
-        columns = schema.fields().len(),
+        columns = projection.schema.fields().len(),
         batch_size,
         "Parquet abierto"
     );
@@ -216,6 +274,10 @@ fn read_blocking(
     for batch in reader {
         let batch =
             batch.map_err(|e| OrchError::node(node, format!("Parquet mal formado: {e}")))?;
+        let batch = match &projection.reorder {
+            Some(reorder) => batch.project(reorder)?,
+            None => batch,
+        };
         if tx.blocking_send(Ok(batch)).is_err() {
             break;
         }

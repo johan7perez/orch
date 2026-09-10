@@ -106,7 +106,7 @@ async fn dispatch(command: Command) -> orch_core::Result<ExitCode> {
         }
 
         Command::Validate { pipeline } => {
-            let dag = load(&pipeline)?;
+            let (dag, pushed) = load(&pipeline, &registry)?;
             Executor::new(registry).prepare(&dag).await?;
             println!(
                 "✓ `{}` es válido: {} nodo(s), {} arista(s)",
@@ -114,12 +114,14 @@ async fn dispatch(command: Command) -> orch_core::Result<ExitCode> {
                 dag.len(),
                 dag.spec().edges.len()
             );
+            report::print_pushdown(&pushed);
             Ok(ExitCode::SUCCESS)
         }
 
         Command::Graph { pipeline } => {
-            let dag = load(&pipeline)?;
+            let (dag, pushed) = load(&pipeline, &registry)?;
             report::print_graph(&dag);
+            report::print_pushdown(&pushed);
             Ok(ExitCode::SUCCESS)
         }
 
@@ -128,7 +130,7 @@ async fn dispatch(command: Command) -> orch_core::Result<ExitCode> {
             format,
             follow,
         } => {
-            let dag = load(&pipeline)?;
+            let (dag, _) = load(&pipeline, &registry)?;
             let executor = Executor::new(registry);
             // Suscribirse ANTES de arrancar: el canal es broadcast y los
             // eventos anteriores a la suscripción no se recuperan.
@@ -162,6 +164,15 @@ async fn dispatch(command: Command) -> orch_core::Result<ExitCode> {
     }
 }
 
-fn load(path: &PathBuf) -> orch_core::Result<Dag> {
-    Dag::build(PipelineSpec::from_path(path)?)
+/// Carga el pipeline y empuja hacia los orígenes lo que acepten.
+///
+/// La reescritura va antes de construir el DAG, así que lo que se valida y
+/// lo que se ejecuta es siempre el pipeline ya optimizado.
+fn load(
+    path: &PathBuf,
+    registry: &orch_core::Registry,
+) -> orch_core::Result<(Dag, Vec<orch_core::Pushed>)> {
+    let mut spec = PipelineSpec::from_path(path)?;
+    let pushed = orch_core::pushdown::apply(&mut spec, registry);
+    Ok((Dag::build(spec)?, pushed))
 }

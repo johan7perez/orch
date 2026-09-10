@@ -106,9 +106,56 @@ edges:
     .await;
 
     assert!(report.succeeded, "{report:?}");
-    // `columns` es una proyección de lectura: conserva el orden del fichero,
-    // no el de la lista. `value` no se lee.
-    assert_eq!(read_lines(&csv)[0], "id,label");
+    // `columns` respeta el orden pedido aunque el fichero las guarde en
+    // otro: el lector devuelve las que hay y el lote se reordena después.
+    // Sin eso, empujar un `select` cambiaría el resultado.
+    assert_eq!(read_lines(&csv)[0], "label,id");
+}
+
+#[tokio::test]
+async fn un_select_se_empuja_al_lector_sin_cambiar_el_resultado() {
+    let dir = TempDir::new().expect("tempdir");
+    let parquet = temp_path(&dir, "datos.parquet");
+    let directo = temp_path(&dir, "directo.csv");
+    let empujado = temp_path(&dir, "empujado.csv");
+
+    make_parquet(&parquet, 200).await;
+
+    let pipeline = |out: &str| {
+        format!(
+            r#"
+name: proyeccion
+nodes:
+  - {{ id: leer, type: source, connector: parquet, config: {{ path: "{parquet}" }} }}
+  - {{ id: recortar, type: transform, op: select, config: {{ columns: [label, id] }} }}
+  - {{ id: escribir, type: sink, connector: csv, config: {{ path: "{out}" }} }}
+edges:
+  - {{ from: leer, to: recortar }}
+  - {{ from: recortar, to: escribir }}
+"#
+        )
+    };
+
+    // Sin reescribir: el `select` recorta después de leerlo todo.
+    let report = run(&pipeline(&directo)).await;
+    assert!(report.succeeded, "{report:?}");
+
+    // Reescrito: el nodo desaparece y el lector no toca `value`.
+    let mut spec =
+        PipelineSpec::from_yaml_str("test.yaml", &pipeline(&empujado)).expect("YAML válido");
+    let pushed = orch_core::pushdown::apply(&mut spec, &default_registry_arc());
+    assert_eq!(pushed.len(), 1, "el select debería haberse empujado");
+    assert_eq!(pushed[0].into, "leer");
+
+    let report = Executor::new(default_registry_arc())
+        .run(&Dag::build(spec).expect("DAG válido"))
+        .await
+        .expect("debería arrancar");
+    assert!(report.succeeded, "{report:?}");
+
+    // Lo único que no puede cambiar: el resultado.
+    assert_eq!(read_lines(&directo), read_lines(&empujado));
+    assert_eq!(read_lines(&empujado)[0], "label,id");
 }
 
 #[tokio::test]

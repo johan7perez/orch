@@ -84,6 +84,14 @@ Con PostgreSQL 17 en la misma máquina, un millón de filas de tres columnas:
 | Carga con `COPY BINARY` | 1,15 s | ~870 K filas/s |
 | Lectura por cursor | 691 ms | ~1,45 M filas/s |
 
+Y lo que gana el pushdown sobre esa misma tabla, con un `filter` que deja
+1 000 de las 1 000 000 de filas y un `select` de dos columnas:
+
+| | Filas leídas | Tiempo |
+|---|---|---|
+| Filtrando en Orch | 1 000 000 | 1,16 s |
+| Empujado a PostgreSQL | 1 000 | **127 ms** |
+
 Tamaño en disco del mismo millón de filas del generador:
 
 | Formato | Tamaño |
@@ -278,6 +286,25 @@ y las etapas se solapan. Fusionar transformaciones no compra nada, y mantener
 los conectores independientes de DataFusion sí vale. Lo que un planificador
 global sí daría —empujar filtros hasta el origen— se consigue con pushdown por
 conector, en la Fase 0.3.
+
+**El trabajo se empuja hasta el origen cuando el conector sabe hacerlo.** Un
+`filter` o un `select` pegado a un origen se absorbe en su config y el nodo
+desaparece: PostgreSQL resuelve el `WHERE` y por la red viaja sólo el
+resultado; Parquet ni descomprime las columnas que no se piden. Es la
+ganancia que un planificador global habría dado, conseguida sin acoplar el
+motor a DataFusion — la reescritura es un paso sobre el pipeline, antes de
+construir el DAG.
+
+Sólo se empuja si el origen tiene **un único consumidor**: con más,
+recortarle columnas o filas cambiaría lo que ven los demás. `orch graph` y
+`orch validate` dicen qué se empujó, porque el pipeline que se ejecuta ya no
+es el que está escrito:
+
+```
+empujado hasta el origen:
+  filter de `filtrar` → `leer`
+  select de `recortar` → `leer`
+```
 
 **Los esquemas se propagan en `validate`.** Los orígenes declaran qué columnas
 producen sin leer datos y cada transformación calcula su salida, así que una

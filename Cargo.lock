@@ -3114,6 +3114,7 @@ dependencies = [
  "native-tls",
  "orch-connectors",
  "orch-core",
+ "orch-sql",
  "postgres-native-tls",
  "postgres-types",
  "rust_decimal",

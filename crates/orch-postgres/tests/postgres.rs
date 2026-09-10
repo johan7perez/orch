@@ -47,6 +47,7 @@ macro_rules! db {
 
 fn registry() -> Arc<Registry> {
     let mut registry = orch_connectors::default_registry();
+    orch_sql::register(&mut registry);
     orch_postgres::register(&mut registry);
     Arc::new(registry)
 }
@@ -487,6 +488,162 @@ edges:
     assert!(message.contains("point"), "{message}");
     // El mensaje debe decir qué hacer.
     assert!(message.contains("::text"), "{message}");
+}
+
+// --- pushdown ---------------------------------------------------------------
+
+#[tokio::test]
+async fn un_filter_se_resuelve_en_el_servidor() {
+    // La prueba de que se empujó de verdad: el nodo de origen reporta sólo
+    // las filas que cumplen, no la tabla entera.
+    let client = db!();
+    reset(&client, "t_push", "id int4, nombre text, activo bool").await;
+    client
+        .batch_execute(
+            "INSERT INTO t_push SELECT g, 'n' || g, g % 10 = 0 FROM generate_series(1, 1000) g",
+        )
+        .await
+        .expect("insertar");
+
+    let dir = TempDir::new().expect("tempdir");
+    let directo = temp_path(&dir, "directo.csv");
+    let empujado = temp_path(&dir, "empujado.csv");
+
+    let pipeline = |out: &str| {
+        format!(
+            r#"
+name: push
+nodes:
+  - id: leer
+    type: source
+    connector: postgres
+    config: {{ dsn: "{}", table: t_push }}
+  - {{ id: filtrar, type: transform, op: filter, config: {{ where: "activo" }} }}
+  - {{ id: recortar, type: transform, op: select, config: {{ columns: [nombre] }} }}
+  - {{ id: escribir, type: sink, connector: csv, config: {{ path: "{out}" }} }}
+edges:
+  - {{ from: leer, to: filtrar }}
+  - {{ from: filtrar, to: recortar }}
+  - {{ from: recortar, to: escribir }}
+"#,
+            dsn()
+        )
+    };
+
+    // Tal cual está escrito: se leen las 1000 filas y se descartan 900.
+    let directo_report = run(&pipeline(&directo)).await;
+    assert!(directo_report.succeeded, "{directo_report:?}");
+    assert_eq!(
+        directo_report
+            .nodes
+            .iter()
+            .find(|n| n.id == "leer")
+            .expect("nodo")
+            .output
+            .rows,
+        1000
+    );
+
+    // Reescrito: el WHERE y la proyección los hace PostgreSQL.
+    let mut spec =
+        PipelineSpec::from_yaml_str("test.yaml", &pipeline(&empujado)).expect("YAML válido");
+    let pushed = orch_core::pushdown::apply(&mut spec, &registry());
+    assert_eq!(pushed.len(), 2, "filter y select deberían empujarse");
+
+    let empujado_report = Executor::new(registry())
+        .run(&Dag::build(spec).expect("DAG válido"))
+        .await
+        .expect("debería arrancar");
+    assert!(empujado_report.succeeded, "{empujado_report:?}");
+
+    let leidas = empujado_report
+        .nodes
+        .iter()
+        .find(|n| n.id == "leer")
+        .expect("nodo")
+        .output
+        .rows;
+    assert_eq!(
+        leidas, 100,
+        "por la red sólo deberían viajar las que cumplen"
+    );
+
+    // Y el resultado es idéntico, que es lo único innegociable.
+    assert_eq!(read_lines(&directo), read_lines(&empujado));
+    assert_eq!(read_lines(&empujado).len(), 101);
+}
+
+#[tokio::test]
+async fn dos_filtros_empujados_se_combinan_con_and() {
+    let client = db!();
+    reset(&client, "t_push_and", "id int4").await;
+    client
+        .batch_execute("INSERT INTO t_push_and SELECT generate_series(1, 100)")
+        .await
+        .expect("insertar");
+
+    let mut spec = PipelineSpec::from_yaml_str(
+        "test.yaml",
+        &format!(
+            r#"
+name: dos-filtros
+nodes:
+  - id: leer
+    type: source
+    connector: postgres
+    config: {{ dsn: "{}", table: t_push_and, where: "id > 10" }}
+  - {{ id: filtrar, type: transform, op: filter, config: {{ where: "id <= 20" }} }}
+  - {{ id: descartar, type: sink, connector: "null" }}
+edges:
+  - {{ from: leer, to: filtrar }}
+  - {{ from: filtrar, to: descartar }}
+"#,
+            dsn()
+        ),
+    )
+    .expect("YAML válido");
+
+    let pushed = orch_core::pushdown::apply(&mut spec, &registry());
+    assert_eq!(pushed.len(), 1);
+
+    let report = Executor::new(registry())
+        .run(&Dag::build(spec).expect("DAG válido"))
+        .await
+        .expect("debería arrancar");
+    assert!(report.succeeded, "{report:?}");
+    // 11..=20: el filtro de la config y el del nodo, unidos con AND.
+    assert_eq!(report.rows_written(), 10);
+}
+
+#[tokio::test]
+async fn con_query_propia_no_se_empuja_nada() {
+    // Envolver la consulta del usuario en una subconsulta cambiaría cómo la
+    // planifica PostgreSQL; quien escribe su SQL ya pone ahí su WHERE.
+    let _client = db!();
+
+    let mut spec = PipelineSpec::from_yaml_str(
+        "test.yaml",
+        &format!(
+            r#"
+name: con-query
+nodes:
+  - id: leer
+    type: source
+    connector: postgres
+    config: {{ dsn: "{}", query: "SELECT 1 AS id" }}
+  - {{ id: filtrar, type: transform, op: filter, config: {{ where: "id > 0" }} }}
+  - {{ id: descartar, type: sink, connector: "null" }}
+edges:
+  - {{ from: leer, to: filtrar }}
+  - {{ from: filtrar, to: descartar }}
+"#,
+            dsn()
+        ),
+    )
+    .expect("YAML válido");
+
+    let pushed = orch_core::pushdown::apply(&mut spec, &registry());
+    assert!(pushed.is_empty());
 }
 
 // --- TLS --------------------------------------------------------------------

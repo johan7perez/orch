@@ -28,6 +28,7 @@ pub mod error;
 pub mod event;
 pub mod executor;
 pub mod io;
+pub mod pushdown;
 pub mod registry;
 pub mod schema;
 pub mod secrets;
@@ -39,6 +40,7 @@ pub use error::{parse_config, OrchError, Result};
 pub use event::RunEvent;
 pub use executor::{Executor, NodeReport, NodeStatus, RunReport};
 pub use io::{Input, InputPort, IoStats, NodeSignal, Output};
+pub use pushdown::{PushdownOp, Pushed};
 pub use registry::Registry;
 pub use schema::{InputSchemas, PortSchema};
 pub use spec::{
