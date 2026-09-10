@@ -77,6 +77,13 @@ Es el techo del orquestador sin I/O; cualquier cambio en el ejecutor debería
 compararse contra estas cifras. El nodo de DataFusion añade ~11 ms sobre 10 M
 de filas (~1 ns/fila) y no materializa nada.
 
+Con PostgreSQL 17 en la misma máquina, un millón de filas de tres columnas:
+
+| Operación | Tiempo | Throughput |
+|---|---|---|
+| Carga con `COPY BINARY` | 1,15 s | ~870 K filas/s |
+| Lectura por cursor | 691 ms | ~1,45 M filas/s |
+
 Tamaño en disco del mismo millón de filas del generador:
 
 | Formato | Tamaño |
@@ -152,6 +159,7 @@ Ejemplo completo en [examples/pipelines/join.yaml](examples/pipelines/join.yaml)
 |---|---|---|
 | source | `csv` | `path`, `has_header`, `delimiter`, `infer_rows` (0 = fichero entero), `batch_size` |
 | source | `parquet` | `path`, `columns` (proyección empujada al fichero), `batch_size` |
+| source | `postgres` | `dsn`, y `query` o bien `table`/`columns`/`where`; `fetch_size` |
 | source | `rest` | `url`, `headers`, `query`, `records_path`, `pagination`, `schema`, `retry`, `rate_limit_per_second` |
 | source | `generator` | `rows`, `with_text`, `batch_size` — datos sintéticos deterministas |
 | transform | `select` | `columns: [..]` — proyecta y reordena |
@@ -163,6 +171,7 @@ Ejemplo completo en [examples/pipelines/join.yaml](examples/pipelines/join.yaml)
 | transform | `sql` | `query` — SQL libre sobre la entrada |
 | sink | `csv` | `path`, `has_header`, `delimiter`, `create_dirs` |
 | sink | `parquet` | `path`, `compression` (`snappy`/`zstd`/`gzip`/`lz4`/`none`), `row_group_size`, `create_dirs` |
+| sink | `postgres` | `dsn`, `table`, `columns`, `truncate` — carga con `COPY BINARY` en una transacción |
 | sink | `rest` | `url`, `method`, `headers`, `rows_per_request`, `body` (`json_array`/`ndjson`), `wrap_in`, `retry` |
 | sink | `null` | descarta; para dry-runs y benchmarks |
 
@@ -197,6 +206,7 @@ crates/
   orch-connectors/   implementaciones nativas (CSV, generador, null, transformaciones)
   orch-sql/          transformaciones con expresiones, sobre DataFusion
   orch-rest/         conector HTTP: paginación, límite de tasa, reintentos
+  orch-postgres/     conector PostgreSQL: cursor de lectura, COPY BINARY de escritura
   orch-cli/          binario `orch`
 ```
 
@@ -256,8 +266,13 @@ también hace usable el ciclo de desarrollo.
 
 ## Limitaciones conocidas de la Fase 0
 
-- **Los sinks no son transaccionales.** Si el pipeline falla a medias, el CSV
-  de salida queda con las filas escritas hasta ese punto.
+- **Los sinks de fichero no son transaccionales.** Si el pipeline falla a
+  medias, el CSV de salida queda con las filas escritas hasta ese punto. El
+  destino de PostgreSQL sí lo es: carga dentro de una transacción y, si algo
+  falla, la tabla queda como estaba.
+- **PostgreSQL sin TLS todavía.** Un servidor que exija SSL rechaza la
+  conexión con un error claro, pero eso deja fuera a casi cualquier Postgres
+  gestionado.
 - **Fan-in por concatenación**, no intercalado: las entradas se drenan en el
   orden en que se declararon las aristas.
 - **Sin persistencia.** Métricas y logs viven en memoria y se pierden al

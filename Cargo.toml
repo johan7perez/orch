@@ -5,6 +5,7 @@ members = [
     "crates/orch-connectors",
     "crates/orch-sql",
     "crates/orch-rest",
+    "crates/orch-postgres",
     "crates/orch-cli",
 ]
 
@@ -20,6 +21,7 @@ orch-core = { path = "crates/orch-core", version = "0.0.1" }
 orch-connectors = { path = "crates/orch-connectors", version = "0.0.1" }
 orch-sql = { path = "crates/orch-sql", version = "0.0.1" }
 orch-rest = { path = "crates/orch-rest", version = "0.0.1" }
+orch-postgres = { path = "crates/orch-postgres", version = "0.0.1" }
 
 arrow = "59"
 async-trait = "0.1"
@@ -31,6 +33,15 @@ futures = "0.3"
 parquet = "59"
 # TLS por defecto = schannel en Windows: sin dependencias externas que compilar.
 reqwest = { version = "0.13", features = ["json"] }
+
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+postgres-types = "0.2"
+tokio-postgres = { version = "0.7", features = [
+    "with-chrono-0_4",
+    "with-uuid-1",
+    "with-serde_json-1",
+] }
 tokio-stream = "0.1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

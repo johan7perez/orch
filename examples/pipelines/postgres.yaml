@@ -1,0 +1,70 @@
+# CSV a PostgreSQL, y de vuelta a Parquet.
+#
+# La cadena de conexión viene de una variable de entorno, no del YAML:
+#
+#   $env:ORCH_PG_DSN = "host=localhost user=postgres password=... dbname=orch_test"
+#   cargo run -p orch-cli -- run examples/pipelines/postgres.yaml --follow
+#
+# La tabla de destino tiene que existir:
+#
+#   CREATE TABLE clientes (
+#     id int8, name text, city text, segment text, spend float8
+#   );
+
+version: 1
+name: clientes-a-postgres
+description: Carga el CSV de clientes en PostgreSQL y exporta un resumen a Parquet.
+
+nodes:
+  - id: leer_csv
+    type: source
+    connector: csv
+    config:
+      path: examples/data/customers.csv
+
+  # `COPY ... FORMAT binary` dentro de una transacción. `truncate` sustituye
+  # la tabla entera de forma atómica: o queda la carga nueva, o la de antes.
+  # Es el único destino del proyecto que no deja resultados a medias.
+  - id: cargar
+    type: sink
+    connector: postgres
+    config:
+      dsn: "${env:ORCH_PG_DSN}"
+      table: clientes
+      truncate: true
+
+  # Segunda fase: no arranca hasta que la transacción de carga se confirmó.
+  - id: releer
+    type: source
+    connector: postgres
+    after: [cargar]
+    config:
+      dsn: "${env:ORCH_PG_DSN}"
+      # El filtro lo resuelve el servidor: por la red sólo viajan las filas
+      # que interesan.
+      table: clientes
+      columns: [city, segment, spend]
+      where: "spend >= 500"
+      fetch_size: 50000
+
+  - id: por_ciudad
+    type: transform
+    op: aggregate
+    config:
+      group_by: [city, segment]
+      aggregates:
+        clientes: "count(*)"
+        total: "round(sum(spend)::numeric, 2)"
+      memory_limit_mb: 256
+
+  - id: escribir
+    type: sink
+    connector: parquet
+    config:
+      path: out/clientes_por_ciudad.parquet
+      compression: zstd
+
+edges:
+  - { from: leer_csv, to: cargar }
+  - { from: releer, to: por_ciudad }
+  - { from: por_ciudad, to: escribir }

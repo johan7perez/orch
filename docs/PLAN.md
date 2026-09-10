@@ -84,6 +84,10 @@ Leyenda: ✅ hecho · 🚧 en curso · ⬜ pendiente
 
 ### 0.3 Conectores restantes de la Fase 0 🚧
 
+Los tests de PostgreSQL necesitan un servidor. Si no hay ninguno accesible se
+saltan con un aviso en vez de fallar, para que el repositorio siga siendo
+comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
+
 - ✅ **Parquet** origen y destino. El esquema sale del pie del fichero, con
   los tipos reales en vez de inferidos, así que `validate` lo conoce siempre.
   `columns:` empuja la proyección al lector: las columnas que no se piden ni
@@ -93,8 +97,30 @@ Leyenda: ✅ hecho · 🚧 en curso · ⬜ pendiente
   config, resuelto al cargar para que una variable ausente se note en
   `validate`. Un esquema desconocido es un error, no un literal.
 
-- ⬜ **Postgres** origen y destino (`tokio-postgres`): lectura por cursor en
-  streaming, escritura con `COPY BINARY` — nunca `INSERT` fila a fila.
+- ✅ **Postgres** origen y destino, en el crate `orch-postgres`. Lectura por
+  cursor dentro de una transacción, `fetch_size` filas por vuelta, con las
+  filas acumuladas entre vueltas para que los lotes de Arrow salgan enteros.
+  Escritura con `COPY ... FORMAT binary` dentro de una transacción: es el
+  único destino del proyecto que **sí es transaccional**, y si el pipeline
+  falla a medias la tabla queda como estaba. `truncate: true` sustituye la
+  tabla entera de forma atómica.
+  - Binario y no CSV por corrección, no por velocidad: en `COPY ... FORMAT
+    csv` una cadena vacía sin comillas significa NULL, y el escritor CSV de
+    Arrow emite lo mismo para un NULL que para un `""`. Cualquier columna de
+    texto nullable se corrompería en silencio.
+  - El esquema sale de preparar la sentencia, que no ejecuta nada, así que
+    `validate` conoce los tipos exactos del servidor sin leer datos.
+  - Tipos cubiertos por un test de ida y vuelta contra una base real: bool,
+    int2/4/8, float4/8, text, date, timestamp, timestamptz, uuid, jsonb,
+    bytea, más sus NULL. `numeric` todavía no; el error dice que se convierta
+    con `::text`.
+  - Medido con PostgreSQL 17 en la misma máquina, 1 M de filas de tres
+    columnas: carga en 1,15 s (~870 K filas/s), lectura en 691 ms
+    (~1,45 M filas/s).
+- ⬜ **TLS para Postgres.** Hoy la conexión es sin cifrar: un servidor que
+  exija SSL la rechaza con un error claro, pero eso deja fuera a casi
+  cualquier Postgres gestionado.
+- ⬜ Soporte de `numeric` sin pasar por texto.
 - ⬜ **Pushdown por conector**: que un `filter` o un `select` inmediatamente
   posterior a un origen se traduzca en leer menos. Es donde de verdad está la
   ganancia que un planificador global habría dado (ver 0.2), y se consigue
