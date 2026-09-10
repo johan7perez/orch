@@ -20,7 +20,7 @@ use serde::Deserialize;
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::Transaction;
 
-use crate::conn::{connect, describe, quote_ident, quote_qualified};
+use crate::conn::{connect, describe, quote_ident, quote_qualified, TlsConfig};
 use crate::types::{arrow_type, value_at, SqlValue};
 
 pub fn register(registry: &mut Registry) {
@@ -44,6 +44,8 @@ pub struct PostgresSinkConfig {
     /// sustituye entera o no se toca.
     #[serde(default)]
     pub truncate: bool,
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 pub struct PostgresSink {
@@ -139,7 +141,7 @@ impl Sink for PostgresSink {
             ));
         }
 
-        let mut client = connect(&self.node, &self.config.dsn).await?;
+        let mut client = connect(&self.node, &self.config.dsn, &self.config.tls).await?;
         let transaction = client.transaction().await.map_err(|e| {
             OrchError::node(
                 &self.node,

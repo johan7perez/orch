@@ -117,10 +117,20 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
   - Medido con PostgreSQL 17 en la misma máquina, 1 M de filas de tres
     columnas: carga en 1,15 s (~870 K filas/s), lectura en 691 ms
     (~1,45 M filas/s).
-- ⬜ **TLS para Postgres.** Hoy la conexión es sin cifrar: un servidor que
-  exija SSL la rechaza con un error claro, pero eso deja fuera a casi
-  cualquier Postgres gestionado.
-- ⬜ Soporte de `numeric` sin pasar por texto.
+- ✅ **TLS para Postgres.** El modo sale del `sslmode` del DSN, como en
+  libpq. La verificación del certificado depende del modo: con `prefer` (el
+  defecto) no se verifica —es cifrado oportunista y exigir más rompería
+  cualquier servidor con certificado propio sin que nadie pidiera
+  garantías—; con `require` sí. **Ahí se diverge de libpq a propósito**:
+  allí `require` cifra sin comprobar nada, lo que da una falsa sensación de
+  seguridad. `tls.verify` y `tls.root_cert` fuerzan cualquiera de los dos
+  comportamientos. Probado contra un servidor con SSL y certificado
+  autofirmado, en los tres modos.
+- ✅ **`numeric`**, transportado como su texto exacto. Convertirlo a
+  `Decimal128` de Arrow obligaría a fijar una escala y redondear en silencio
+  lo que no encajara, que en datos de dinero es inaceptable. El texto da la
+  vuelta sin perder nada; hay test con 20 dígitos y seis decimales. Por
+  encima de 28 dígitos significativos el error dice que se use `round()`.
 - ⬜ **Pushdown por conector**: que un `filter` o un `select` inmediatamente
   posterior a un origen se traduzca en leer menos. Es donde de verdad está la
   ganancia que un planificador global habría dado (ver 0.2), y se consigue
@@ -134,8 +144,9 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
   - El esquema hay que declararlo para que llegue a `validate`: llamar a una
     API durante la validación tendría efectos secundarios. Sin declararlo se
     deduce de la primera página.
-- ⬜ Almacén de secretos del sistema operativo (`${keyring:...}`), además de
-  las variables de entorno.
+- ✅ Almacén de secretos del sistema operativo: `${keyring:servicio/usuario}`
+  además de `${env:...}`. Credential Manager en Windows, Llavero en macOS,
+  Secret Service en Linux.
 
 ### 0.4 Persistencia y observabilidad ⬜
 

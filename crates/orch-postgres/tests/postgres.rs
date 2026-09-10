@@ -461,7 +461,7 @@ edges:
 #[tokio::test]
 async fn un_tipo_no_soportado_da_un_mensaje_util() {
     let client = db!();
-    reset(&client, "t_numeric", "importe numeric(10,2)").await;
+    reset(&client, "t_numeric", "posicion point").await;
 
     let err = Executor::new(registry())
         .prepare(&dag(&format!(
@@ -481,12 +481,226 @@ edges:
             dsn()
         )))
         .await
-        .expect_err("numeric no está soportado todavía");
+        .expect_err("point no está soportado todavía");
 
     let message = err.to_string();
-    assert!(message.contains("numeric"), "{message}");
+    assert!(message.contains("point"), "{message}");
     // El mensaje debe decir qué hacer.
     assert!(message.contains("::text"), "{message}");
+}
+
+// --- TLS --------------------------------------------------------------------
+
+/// `true` si el servidor de pruebas tiene SSL activo.
+async fn server_has_ssl(client: &Client) -> bool {
+    client
+        .query_one("SHOW ssl", &[])
+        .await
+        .map(|row| row.get::<_, String>(0) == "on")
+        .unwrap_or(false)
+}
+
+#[tokio::test]
+async fn se_conecta_por_tls_sin_verificar_el_certificado() {
+    let client = db!();
+    if !server_has_ssl(&client).await {
+        eprintln!("el servidor no tiene SSL activo; se salta el test");
+        return;
+    }
+    reset(&client, "t_tls", "id int4").await;
+    client
+        .batch_execute("INSERT INTO t_tls VALUES (1),(2)")
+        .await
+        .expect("insertar");
+
+    let dir = TempDir::new().expect("tempdir");
+    let out = temp_path(&dir, "out.csv");
+
+    let report = run(&format!(
+        r#"
+name: tls
+nodes:
+  - id: leer
+    type: source
+    connector: postgres
+    config:
+      dsn: "{} sslmode=require"
+      table: t_tls
+      tls: {{ verify: false }}
+  - {{ id: escribir, type: sink, connector: csv, config: {{ path: "{out}" }} }}
+edges:
+  - {{ from: leer, to: escribir }}
+"#,
+        dsn()
+    ))
+    .await;
+
+    assert!(report.succeeded, "{report:?}");
+    assert_eq!(report.rows_written(), 2);
+}
+
+#[tokio::test]
+async fn con_verificacion_un_certificado_autofirmado_se_rechaza() {
+    // Es la diferencia deliberada con libpq: allí `sslmode=require` cifra sin
+    // verificar nada. Aquí hay que desactivar la verificación a propósito.
+    let client = db!();
+    if !server_has_ssl(&client).await {
+        eprintln!("el servidor no tiene SSL activo; se salta el test");
+        return;
+    }
+
+    let report = run(&format!(
+        r#"
+name: tls-estricto
+nodes:
+  - id: leer
+    type: source
+    connector: postgres
+    config:
+      dsn: "{} sslmode=require"
+      query: "SELECT 1 AS uno"
+  - {{ id: descartar, type: sink, connector: "null" }}
+edges:
+  - {{ from: leer, to: descartar }}
+"#,
+        dsn()
+    ))
+    .await;
+
+    assert!(!report.succeeded, "no debería aceptar el autofirmado");
+    let leer = report.nodes.iter().find(|n| n.id == "leer").expect("nodo");
+    let message = leer.error.as_deref().unwrap_or_default();
+    // El error tiene que decir cómo arreglarlo.
+    assert!(
+        message.contains("root_cert") || message.contains("verify"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn sslmode_disable_sigue_funcionando_sin_tls() {
+    let client = db!();
+    reset(&client, "t_sin_tls", "id int4").await;
+    client
+        .batch_execute("INSERT INTO t_sin_tls VALUES (7)")
+        .await
+        .expect("insertar");
+
+    let report = run(&format!(
+        r#"
+name: sin-tls
+nodes:
+  - id: leer
+    type: source
+    connector: postgres
+    config:
+      dsn: "{} sslmode=disable"
+      table: t_sin_tls
+  - {{ id: descartar, type: sink, connector: "null" }}
+edges:
+  - {{ from: leer, to: descartar }}
+"#,
+        dsn()
+    ))
+    .await;
+
+    assert!(report.succeeded, "{report:?}");
+    assert_eq!(report.rows_written(), 1);
+}
+
+// --- numeric ----------------------------------------------------------------
+
+#[tokio::test]
+async fn numeric_da_la_vuelta_sin_perder_decimales() {
+    // Se transporta como texto exacto justamente para no tener que elegir una
+    // escala y redondear en silencio.
+    let client = db!();
+    reset(&client, "t_num", "importe numeric(20,6), factor numeric").await;
+    reset(
+        &client,
+        "t_num_copia",
+        "importe numeric(20,6), factor numeric",
+    )
+    .await;
+    client
+        .batch_execute(
+            "INSERT INTO t_num VALUES
+                 (12345678901234.567890, 0.000001),
+                 (-0.500000, 12345.6789),
+                 (NULL, NULL)",
+        )
+        .await
+        .expect("insertar");
+
+    let report = run(&format!(
+        r#"
+name: numeric
+nodes:
+  - {{ id: leer, type: source, connector: postgres, config: {{ dsn: "{dsn}", table: t_num }} }}
+  - id: cargar
+    type: sink
+    connector: postgres
+    config:
+      dsn: "{dsn}"
+      table: t_num_copia
+edges:
+  - {{ from: leer, to: cargar }}
+"#,
+        dsn = dsn()
+    ))
+    .await;
+
+    assert!(report.succeeded, "{report:?}");
+
+    let diferencias: i64 = client
+        .query_one(
+            "SELECT count(*) FROM (
+                 (SELECT * FROM t_num EXCEPT ALL SELECT * FROM t_num_copia)
+                 UNION ALL
+                 (SELECT * FROM t_num_copia EXCEPT ALL SELECT * FROM t_num)
+             ) AS d",
+            &[],
+        )
+        .await
+        .expect("comparar")
+        .get(0);
+    assert_eq!(diferencias, 0, "algún numeric cambió de valor");
+}
+
+#[tokio::test]
+async fn un_numeric_demasiado_grande_da_un_mensaje_util() {
+    let client = db!();
+    reset(&client, "t_num_grande", "enorme numeric").await;
+    // 40 dígitos: más de lo que cabe en el decimal de 96 bits.
+    client
+        .batch_execute("INSERT INTO t_num_grande VALUES (1234567890123456789012345678901234567890)")
+        .await
+        .expect("insertar");
+
+    let report = run(&format!(
+        r#"
+name: numeric-grande
+nodes:
+  - {{ id: leer, type: source, connector: postgres, config: {{ dsn: "{}", table: t_num_grande }} }}
+  - {{ id: descartar, type: sink, connector: "null" }}
+edges:
+  - {{ from: leer, to: descartar }}
+"#,
+        dsn()
+    ))
+    .await;
+
+    assert!(!report.succeeded);
+    let message = report
+        .nodes
+        .iter()
+        .find(|n| n.id == "leer")
+        .and_then(|n| n.error.clone())
+        .unwrap_or_default();
+    assert!(
+        message.contains("round"),
+        "debería sugerir la salida: {message}"
+    );
 }
 
 // --- ida y vuelta -----------------------------------------------------------

@@ -69,6 +69,54 @@ fn una_variable_ausente_es_un_error_al_cargar() {
 }
 
 #[test]
+fn lee_una_credencial_del_almacen_del_sistema() {
+    // Crea una credencial con un nombre propio, la lee por el pipeline y la
+    // borra. Si el almacén no está disponible (contenedor sin sesión de
+    // escritorio), se salta.
+    let service = "orch-test-suite";
+    let user = "pipeline";
+    let entry = match keyring::Entry::new(service, user) {
+        Ok(entry) => entry,
+        Err(err) => {
+            eprintln!("almacén de credenciales no disponible ({err}); se salta el test");
+            return;
+        }
+    };
+    if let Err(err) = entry.set_password("clave-de-prueba") {
+        eprintln!("no se pudo escribir en el almacén ({err}); se salta el test");
+        return;
+    }
+
+    let resolved = spec_with_config(&format!(r#"{{ dsn: "${{keyring:{service}/{user}}}" }}"#));
+    let _ = entry.delete_credential();
+
+    let spec = resolved.expect("debería resolver");
+    assert_eq!(config_of(&spec, "origen")["dsn"], "clave-de-prueba");
+}
+
+#[test]
+fn una_referencia_de_keyring_mal_formada_es_un_error() {
+    let err = spec_with_config(r#"{ dsn: "${keyring:sin-barra}" }"#).expect_err("falta el usuario");
+    assert!(
+        err.to_string().contains("servicio/usuario"),
+        "{}",
+        err.to_string()
+    );
+}
+
+#[test]
+fn una_credencial_inexistente_es_un_error_al_cargar() {
+    let err = spec_with_config(r#"{ dsn: "${keyring:orch-no-existe-jamas/nadie}" }"#)
+        .expect_err("la credencial no existe");
+    let message = err.to_string();
+    assert!(message.contains("orch-no-existe-jamas/nadie"), "{message}");
+    assert!(
+        message.contains("origen"),
+        "debería señalar el nodo: {message}"
+    );
+}
+
+#[test]
 fn un_origen_de_secreto_desconocido_es_un_error() {
     // Un `${ENV:X}` mal escrito acabaría en una cadena de conexión y fallaría
     // de forma incomprensible; mejor rechazarlo aquí.

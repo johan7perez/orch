@@ -9,7 +9,7 @@ use orch_core::{parse_config, NodeContext, OrchError, Output, Registry, Result, 
 use serde::Deserialize;
 use tokio_postgres::Statement;
 
-use crate::conn::{connect, describe, quote_ident, quote_qualified};
+use crate::conn::{connect, describe, quote_ident, quote_qualified, TlsConfig};
 use crate::types::{arrow_type, ColumnBuilder};
 
 pub fn register(registry: &mut Registry) {
@@ -45,6 +45,8 @@ pub struct PostgresSourceConfig {
     /// Filas que el servidor entrega por vuelta del cursor.
     #[serde(default = "default_fetch_size")]
     pub fetch_size: usize,
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 pub struct PostgresSource {
@@ -162,7 +164,7 @@ impl Source for PostgresSource {
     /// disponible se devuelve `None`: la validación no puede exigir que lo
     /// esté.
     async fn schema(&self) -> Result<Option<SchemaRef>> {
-        let client = match connect(&self.node, &self.config.dsn).await {
+        let client = match connect(&self.node, &self.config.dsn, &self.config.tls).await {
             Ok(client) => client,
             Err(err) => {
                 tracing::debug!(
@@ -186,7 +188,7 @@ impl Source for PostgresSource {
     }
 
     async fn read(&self, ctx: &NodeContext, output: &Output) -> Result<()> {
-        let mut client = connect(&self.node, &self.config.dsn).await?;
+        let mut client = connect(&self.node, &self.config.dsn, &self.config.tls).await?;
 
         // El cursor vive dentro de una transacción; al ser sólo lectura, se
         // deshace sola al terminar.

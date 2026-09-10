@@ -1,20 +1,24 @@
 //! Referencias a secretos dentro de la config de un nodo.
 //!
 //! Una contraseña no debe vivir en el YAML: el YAML se versiona, se comparte
-//! y acaba en un repositorio. En su lugar se escribe una referencia,
-//! `${env:PGPASSWORD}`, que se resuelve al cargar el pipeline.
+//! y acaba en un repositorio. En su lugar se escribe una referencia, que se
+//! resuelve al cargar el pipeline:
 //!
-//! El formato deja sitio para otros orígenes (`${file:...}`, `${keyring:...}`)
-//! sin cambiar la sintaxis. Un esquema desconocido es un error, no un valor
-//! literal: un `${ENV:X}` mal escrito acabaría en una cadena de conexión y
-//! fallaría de forma incomprensible.
+//! - `${env:PGPASSWORD}` — una variable de entorno.
+//! - `${keyring:orch/postgres}` — el almacén de credenciales del sistema
+//!   (Credential Manager en Windows, Llavero en macOS, Secret Service en
+//!   Linux). El formato es `servicio/usuario`.
+//!
+//! Un esquema desconocido es un error, no un valor literal: un `${ENV:X}`
+//! mal escrito acabaría en una cadena de conexión y fallaría de forma
+//! incomprensible.
 
 use serde_json::Value;
 
 use crate::error::{OrchError, Result};
 
 /// Esquemas soportados hoy.
-const SCHEMES: &[&str] = &["env"];
+const SCHEMES: &[&str] = &["env", "keyring"];
 
 /// Resuelve las referencias de todas las cadenas de un valor de config.
 pub fn expand_value(node: &str, value: &mut Value) -> Result<()> {
@@ -65,6 +69,9 @@ pub fn expand(node: &str, text: &str) -> Result<Option<String>> {
             Some(("env", name)) => {
                 out.push_str(&lookup_env(node, name)?);
             }
+            Some(("keyring", entry)) => {
+                out.push_str(&lookup_keyring(node, entry)?);
+            }
             Some((scheme, _)) if is_identifier(scheme) => {
                 return Err(OrchError::config(
                     node,
@@ -103,6 +110,35 @@ fn lookup_env(node: &str, name: &str) -> Result<String> {
             format!("la variable de entorno `{name}` no está definida"),
         )
     })
+}
+
+/// Lee una credencial del almacén del sistema.
+///
+/// El error nunca incluye el valor, obviamente, pero tampoco distingue entre
+/// «no existe» y «no se pudo abrir el almacén»: ambos casos se resuelven
+/// mirando el mensaje del sistema, que sí se incluye.
+fn lookup_keyring(node: &str, entry: &str) -> Result<String> {
+    let Some((service, user)) = entry.split_once('/') else {
+        return Err(OrchError::config(
+            node,
+            format!("`${{keyring:{entry}}}`: se espera `servicio/usuario`"),
+        ));
+    };
+    if service.is_empty() || user.is_empty() {
+        return Err(OrchError::config(
+            node,
+            format!("`${{keyring:{entry}}}`: ni el servicio ni el usuario pueden estar vacíos"),
+        ));
+    }
+
+    keyring::Entry::new(service, user)
+        .and_then(|entry| entry.get_password())
+        .map_err(|e| {
+            OrchError::config(
+                node,
+                format!("no se pudo leer la credencial `{service}/{user}`: {e}"),
+            )
+        })
 }
 
 fn is_identifier(text: &str) -> bool {

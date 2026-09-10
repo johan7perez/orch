@@ -192,11 +192,40 @@ config:
   dsn: "postgres://app:${env:PGPASSWORD}@localhost/ventas"
 ```
 
-Sólo `${env:NOMBRE}` está soportado hoy; el formato deja sitio para otros
-orígenes. Un esquema mal escrito (`${ENV:X}`) es un error, no un literal: si
-pasara tal cual a una cadena de conexión, el fallo sería incomprensible. Un
-`${...}` sin esquema (`${HOME}`) sí se deja literal, por si lo interpreta el
-destino.
+Dos orígenes disponibles:
+
+| Referencia | De dónde sale |
+|---|---|
+| `${env:NOMBRE}` | Variable de entorno |
+| `${keyring:servicio/usuario}` | Almacén del sistema: Credential Manager, Llavero o Secret Service |
+
+Un esquema mal escrito (`${ENV:X}`) es un error, no un literal: si pasara tal
+cual a una cadena de conexión, el fallo sería incomprensible. Un `${...}` sin
+esquema (`${HOME}`) sí se deja literal, por si lo interpreta el destino.
+
+### TLS en PostgreSQL
+
+El modo sale del `sslmode` del DSN, como en libpq. Lo que cambia es cuándo se
+**verifica** el certificado:
+
+| `sslmode` | Cifra | Verifica por defecto |
+|---|---|---|
+| `disable` | no | — |
+| `prefer` (defecto) | si el servidor puede | **no** |
+| `require` | siempre | **sí** |
+
+Con `prefer` no se verifica porque es cifrado oportunista, igual que en libpq.
+Con `require` sí, y **ahí se diverge de libpq a propósito**: allí `require`
+cifra sin comprobar nada, lo que protege del espionaje pasivo pero no de un
+intermediario. Si alguien pide TLS explícitamente, que sirva de algo.
+
+```yaml
+config:
+  dsn: "host=db.interno user=app password=${env:PGPASSWORD} sslmode=require"
+  tls:
+    root_cert: /etc/orch/ca.pem   # para un certificado propio
+    # verify: false               # o desactivarlo, a sabiendas
+```
 
 ## Arquitectura
 
@@ -270,9 +299,10 @@ también hace usable el ciclo de desarrollo.
   medias, el CSV de salida queda con las filas escritas hasta ese punto. El
   destino de PostgreSQL sí lo es: carga dentro de una transacción y, si algo
   falla, la tabla queda como estaba.
-- **PostgreSQL sin TLS todavía.** Un servidor que exija SSL rechaza la
-  conexión con un error claro, pero eso deja fuera a casi cualquier Postgres
-  gestionado.
+- **`numeric` de PostgreSQL viaja como texto exacto.** Convertirlo a
+  `Decimal128` obligaría a fijar una escala y redondear en silencio lo que no
+  encajara, inaceptable en datos de dinero. Por encima de 28 dígitos
+  significativos falla y pide un `round()`.
 - **Fan-in por concatenación**, no intercalado: las entradas se drenan en el
   orden en que se declararon las aristas.
 - **Sin persistencia.** Métricas y logs viven en memoria y se pierden al

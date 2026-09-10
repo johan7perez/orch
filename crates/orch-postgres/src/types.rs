@@ -42,6 +42,12 @@ pub fn arrow_type(node: &str, column: &str, pg: &Type) -> Result<DataType> {
         // Se transportan como texto: es su representación natural y evita
         // arrastrar tipos de Arrow que casi nada más entiende.
         Type::UUID | Type::JSON | Type::JSONB => DataType::Utf8,
+        // `numeric` es de precisión y escala arbitrarias, y una columna de
+        // Arrow tiene que fijar ambas. Convertirlo a `Decimal128` exigiría
+        // elegir una escala y redondear en silencio los valores que no
+        // encajen — inaceptable en datos de dinero. Su forma textual es
+        // exacta y da la vuelta sin perder nada.
+        Type::NUMERIC => DataType::Utf8,
         ref other => {
             return Err(OrchError::node(
                 node,
@@ -152,6 +158,20 @@ impl ColumnBuilder {
                         .try_get::<_, Option<serde_json::Value>>(index)
                         .map_err(fail)?
                         .map(|value| value.to_string()),
+                    Type::NUMERIC => row
+                        .try_get::<_, Option<rust_decimal::Decimal>>(index)
+                        .map_err(|e| {
+                            OrchError::node(
+                                node,
+                                format!(
+                                    "la columna `{column}` es `numeric` y no cabe en 28 \
+                                     dígitos significativos: {}. Redúcela en la consulta, \
+                                     por ejemplo `round({column}, 6)`.",
+                                    describe(&e)
+                                ),
+                            )
+                        })?
+                        .map(|value| value.normalize().to_string()),
                     _ => row
                         .try_get::<_, Option<&str>>(index)
                         .map_err(fail)?
@@ -204,6 +224,7 @@ pub enum SqlValue {
     TimestampTz(DateTime<Utc>),
     Uuid(uuid::Uuid),
     Json(serde_json::Value),
+    Numeric(rust_decimal::Decimal),
 }
 
 type SqlResult = std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>>;
@@ -225,6 +246,7 @@ impl ToSql for SqlValue {
             SqlValue::TimestampTz(value) => value.to_sql(ty, out),
             SqlValue::Uuid(value) => value.to_sql(ty, out),
             SqlValue::Json(value) => value.to_sql(ty, out),
+            SqlValue::Numeric(value) => value.to_sql(ty, out),
         }
     }
 
@@ -336,13 +358,19 @@ pub fn value_at(
                 SqlValue::Timestamp(moment.naive_utc())
             }
         }
-        Type::UUID | Type::JSON | Type::JSONB => {
+        Type::UUID | Type::JSON | Type::JSONB | Type::NUMERIC => {
             let text = array
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .ok_or_else(|| missing("texto"))?
                 .value(row);
             match *pg {
+                Type::NUMERIC => SqlValue::Numeric(text.parse().map_err(|e| {
+                    OrchError::node(
+                        node,
+                        format!("`{text}` no es un número válido para la columna `{column}`: {e}"),
+                    )
+                })?),
                 Type::UUID => SqlValue::Uuid(text.parse().map_err(|e| {
                     OrchError::node(
                         node,
