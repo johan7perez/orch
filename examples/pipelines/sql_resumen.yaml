@@ -1,0 +1,69 @@
+# Transformaciones con expresiones sobre DataFusion.
+#
+#   cargo run -p orch-cli -- run examples/pipelines/sql_resumen.yaml --follow
+#
+# El flujo del nodo anterior se registra como la tabla `input`. DataFusion tira
+# de los batches conforme los necesita: `filter` y `derive` no acumulan nada.
+# `aggregate` sí tiene que agrupar en memoria, por eso lleva `memory_limit_mb`.
+
+version: 1
+name: clientes-por-ciudad
+description: Filtra, calcula el ITBIS y agrega el gasto por ciudad.
+
+nodes:
+  - id: leer_clientes
+    type: source
+    connector: csv
+    config:
+      path: examples/data/customers.csv
+
+  # Sólo clientes con gasto relevante. Se resuelve en streaming.
+  - id: relevantes
+    type: transform
+    op: filter
+    config:
+      where: "spend >= 500"
+
+  # Columnas calculadas sobre las existentes.
+  - id: con_impuesto
+    type: transform
+    op: derive
+    config:
+      columns:
+        spend_con_itbis: "spend * 1.18"
+
+  # Agrupar rompe el streaming: acumula un estado por grupo. El tope de
+  # memoria evita que un dataset inesperadamente grande se lleve el proceso.
+  - id: por_ciudad
+    type: transform
+    op: aggregate
+    config:
+      group_by: [city]
+      aggregates:
+        clientes: "count(*)"
+        gasto_total: "sum(spend_con_itbis)"
+        gasto_medio: "avg(spend_con_itbis)"
+      memory_limit_mb: 256
+
+  # Cuando hace falta algo que las tres anteriores no expresan, SQL directo.
+  - id: ordenar
+    type: transform
+    op: sql
+    config:
+      query: >
+        SELECT city, clientes, round(gasto_total, 2) AS gasto_total
+        FROM input
+        ORDER BY gasto_total DESC
+
+  - id: escribir
+    type: sink
+    connector: csv
+    config:
+      path: out/clientes_por_ciudad.csv
+
+edges:
+  - { from: leer_clientes, to: relevantes }
+  - { from: relevantes, to: con_impuesto }
+  - { from: con_impuesto, to: por_ciudad }
+  - { from: por_ciudad, to: ordenar }
+  - { from: ordenar, to: escribir }

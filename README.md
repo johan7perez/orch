@@ -66,9 +66,16 @@ un orden de magnitud):
 cargo run --release -p orch-cli -- run examples/pipelines/benchmark.yaml
 ```
 
-Línea base actual (10 M de filas, generador → sink nulo, `batch_size: 65536`):
-**56 ms, ~180 M filas/s**. Es el techo del orquestador sin I/O; cualquier
-cambio en el ejecutor debería compararse contra esta cifra.
+Líneas base actuales (10 M de filas, `batch_size: 65536`, sin tocar disco):
+
+| Pipeline | Tiempo | Throughput |
+|---|---|---|
+| `benchmark.yaml` — generador → null | 54 ms | ~185 M filas/s |
+| `benchmark_sql.yaml` — generador → `filter` → null | 65 ms | ~155 M filas/s de entrada |
+
+Es el techo del orquestador sin I/O; cualquier cambio en el ejecutor debería
+compararse contra estas cifras. El nodo de DataFusion añade ~11 ms sobre 10 M
+de filas (~1 ns/fila) y no materializa nada.
 
 Logs detallados: `$env:ORCH_LOG = "orch_core=debug,orch_connectors=debug"`.
 
@@ -111,6 +118,10 @@ edges:
 | transform | `select` | `columns: [..]` — proyecta y reordena |
 | transform | `rename` | `columns: { viejo: nuevo }` |
 | transform | `limit` | `rows` — corta y detiene la lectura aguas arriba |
+| transform | `filter` | `where` — predicado SQL |
+| transform | `derive` | `columns: { nuevo: expresión }` |
+| transform | `aggregate` | `group_by: [..]`, `aggregates: { alias: "sum(x)" }` |
+| transform | `sql` | `query` — SQL libre sobre la entrada |
 | sink | `csv` | `path`, `has_header`, `delimiter`, `create_dirs` |
 | sink | `null` | descarta; para dry-runs y benchmarks |
 
@@ -120,6 +131,7 @@ edges:
 crates/
   orch-core/         modelo de pipeline, validación del DAG, ejecutor, traits de conector
   orch-connectors/   implementaciones nativas (CSV, generador, null, transformaciones)
+  orch-sql/          transformaciones con expresiones, sobre DataFusion
   orch-cli/          binario `orch`
 ```
 
@@ -153,6 +165,21 @@ su entrada; el origen lo detecta y deja de producir en vez de fallar.
 ya consumió o emitió lotes duplicaría o perdería filas. Si el nodo ya se movió,
 el fallo es definitivo y el informe lo dice.
 
+**DataFusion entra como transformación aislada, no como planificador global.**
+Cada nodo SQL registra el flujo del nodo anterior como un `StreamingTable` y
+DataFusion tira de los batches: `filter` y `derive` no acumulan nada. La
+alternativa —dejar que DataFusion planifique sub-grafos enteros— permitiría
+empujar filtros hasta el origen, pero obligaría a que cada conector fuera un
+`TableProvider` y ataría el motor a su modelo de ejecución. Queda pendiente de
+medir antes de decidir.
+
+**El `SessionContext` de cada nodo SQL se construye al preparar el pipeline,
+no al ejecutarlo**, para que un pipeline preparado una vez y ejecutado muchas
+(el caso del demonio de la Fase 0.5 y de la UI) no lo repita. En release el
+ahorro es pequeño —montar el catálogo de funciones de DataFusion cuesta menos
+de 1 ms por nodo—, pero en debug son cientos de milisegundos por nodo, así que
+también hace usable el ciclo de desarrollo.
+
 ## Limitaciones conocidas de la Fase 0
 
 - **Los sinks no son transaccionales.** Si el pipeline falla a medias, el CSV
@@ -161,7 +188,13 @@ el fallo es definitivo y el informe lo dice.
   orden en que se declararon las aristas.
 - **Sin persistencia.** Métricas y logs viven en memoria y se pierden al
   terminar el proceso; DuckDB entra en la Fase 0.4.
-- **Transformaciones sin expresiones.** Filtros, agregaciones y SQL llegan con
-  DataFusion en la Fase 0.2.
 - **Las ramas independientes no se cancelan** cuando otra falla: terminan su
   trabajo y el run se marca como fallido al final.
+- **El esquema se descubre del primer lote**, no en `validate`. Una columna
+  inexistente falla en ejecución, y una entrada vacía produce salida vacía
+  incluso para un `COUNT(*)`, que en SQL puro devolvería una fila con 0.
+- **Un nodo SQL ve un solo flujo de una pasada**, así que no hay joins entre
+  ramas del DAG. Si el plan intentara escanear la tabla dos veces (un
+  self-join), falla con un mensaje explícito en vez de devolver vacío.
+- **`aggregate` y `ORDER BY` rompen el streaming**: acumulan estado en
+  memoria. Usa `memory_limit_mb` en esos nodos.

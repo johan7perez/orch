@@ -1,0 +1,37 @@
+# Banco de pruebas del camino SQL: generador → filtro → sink nulo.
+#
+# Se compara contra `benchmark.yaml` (mismo origen y destino, sin nodo SQL)
+# para aislar el coste real de meter DataFusion en medio del flujo.
+#
+#   cargo run --release -p orch-cli -- run examples/pipelines/benchmark_sql.yaml
+
+version: 1
+name: benchmark-sql
+description: 10 M de filas pasando por un filtro de DataFusion, sin tocar disco.
+
+settings:
+  batch_size: 65536
+  channel_capacity: 8
+
+nodes:
+  - id: generar
+    type: source
+    connector: generator
+    config:
+      rows: 10000000
+      with_text: false
+
+  # Un filtro no rompe el streaming: DataFusion evalúa lote a lote.
+  - id: filtrar
+    type: transform
+    op: filter
+    config:
+      where: "id >= 5000000"
+
+  - id: descartar
+    type: sink
+    connector: "null"
+
+edges:
+  - { from: generar, to: filtrar }
+  - { from: filtrar, to: descartar }

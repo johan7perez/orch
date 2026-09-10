@@ -32,14 +32,37 @@ Leyenda: ✅ hecho · 🚧 en curso · ⬜ pendiente
 - ✅ Línea base de throughput: 10 M filas en 56 ms (~180 M filas/s) con
   generador → sink nulo en release.
 
-### 0.2 Motor de transformaciones (DataFusion) ⬜
+### 0.2 Motor de transformaciones (DataFusion) 🚧
 
-- ⬜ Transformación `sql`: registrar el flujo entrante como tabla y ejecutar
-  una query de DataFusion por lotes.
-- ⬜ `filter` con expresión, `derive` (columnas calculadas), `aggregate`.
-- ⬜ Decidir el punto de integración: DataFusion como transformación aislada
-  vs. como planificador de sub-grafos completos. Medir ambos.
-- ⬜ Validación de esquema en tiempo de `validate`, no en tiempo de ejecución.
+- ✅ Crate `orch-sql` con DataFusion 55 (alineado con `arrow` 59, una sola
+  versión de Arrow en el workspace).
+- ✅ `StreamingTable` + `PartitionStream` sobre el flujo del nodo: DataFusion
+  tira de nuestros batches en vez de exigir el dataset materializado.
+- ✅ Transformación `sql` con SQL libre.
+- ✅ `filter`, `derive` y `aggregate`, que bajan a SQL y comparten el mismo
+  camino de ejecución.
+- ✅ `memory_limit_mb` por nodo para las operaciones que rompen el streaming.
+- ✅ Parada temprana correcta: un `LIMIT` corta la alimentación sin que el
+  origen lo reporte como fallo.
+- ✅ Validación de sintaxis SQL y de campos desconocidos en `orch validate`.
+- ✅ `SessionContext` construido al preparar, no al ejecutar. En debug esto
+  llevó `sql_resumen` de 730 ms a 78 ms; en release el catálogo de funciones
+  cuesta <1 ms por nodo, así que el ahorro medido es de ~3 ms sobre 4 nodos.
+- ✅ Coste del camino SQL medido: 10 M de filas por un `filter` de DataFusion
+  en 65 ms, frente a 54 ms de la línea base sin nodo SQL (~1 ns/fila). El
+  filtro no materializa nada.
+- ⬜ **Decidir el punto de integración.** Implementada la opción "transformación
+  aislada". Falta prototipar y medir la alternativa: DataFusion planificando
+  sub-grafos completos, con los conectores expuestos como `TableProvider`.
+  Ganaría empuje de filtros hasta el origen; costaría atar el motor a su
+  modelo de ejecución.
+- ⬜ **Propagación estática de esquemas hasta `validate`.** Hoy el esquema se
+  descubre del primer lote, así que una columna inexistente falla en
+  ejecución y no en `validate`, y una entrada vacía no produce plan (un
+  `COUNT(*)` sobre cero filas devuelve vacío en vez de una fila con 0).
+  Requiere que los orígenes declaren su esquema sin leer datos.
+- ⬜ Joins entre dos ramas del DAG: hoy la tabla de entrada es de una sola
+  pasada y un nodo SQL sólo ve un flujo (el fan-in concatena).
 
 ### 0.3 Conectores restantes de la Fase 0 ⬜
 

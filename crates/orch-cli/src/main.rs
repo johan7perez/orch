@@ -87,8 +87,15 @@ fn init_tracing(level: &str) {
         .init();
 }
 
+/// Todo lo que el binario sabe ejecutar: conectores nativos + SQL.
+fn full_registry() -> std::sync::Arc<orch_core::Registry> {
+    let mut registry = orch_connectors::default_registry();
+    orch_sql::register(&mut registry);
+    std::sync::Arc::new(registry)
+}
+
 async fn dispatch(command: Command) -> orch_core::Result<ExitCode> {
-    let registry = orch_connectors::default_registry_arc();
+    let registry = full_registry();
 
     match command {
         Command::Connectors => {
