@@ -20,7 +20,7 @@ nodes:
     type: source
     connector: csv
     config:
-      path: examples/data/customers.csv
+      path: ../data/customers.csv
 
   # `COPY ... FORMAT binary` dentro de una transacción. `truncate` sustituye
   # la tabla entera de forma atómica: o queda la carga nueva, o la de antes.
@@ -61,7 +61,7 @@ nodes:
     type: sink
     connector: parquet
     config:
-      path: out/clientes_por_ciudad.parquet
+      path: ../out/clientes_por_ciudad.parquet
       compression: zstd
 
 edges:

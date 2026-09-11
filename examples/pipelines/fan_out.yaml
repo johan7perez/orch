@@ -13,14 +13,14 @@ nodes:
     type: source
     connector: csv
     config:
-      path: examples/data/customers.csv
+      path: ../data/customers.csv
 
   # Los batches de Arrow se comparten por puntero: el fan-out no copia datos.
   - id: copia_completa
     type: sink
     connector: csv
     config:
-      path: out/clientes_copia.csv
+      path: ../out/clientes_copia.csv
 
   - id: solo_gasto
     type: transform
@@ -32,7 +32,7 @@ nodes:
     type: sink
     connector: csv
     config:
-      path: out/clientes_gasto.csv
+      path: ../out/clientes_gasto.csv
 
   # Segunda fase: no arranca hasta que ambos destinos anteriores han cerrado.
   - id: muestra
@@ -53,7 +53,7 @@ nodes:
     type: sink
     connector: csv
     config:
-      path: out/muestra.csv
+      path: ../out/muestra.csv
 
 edges:
   - { from: leer_clientes, to: copia_completa }

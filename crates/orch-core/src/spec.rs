@@ -106,6 +106,34 @@ impl PipelineSpec {
         Ok(())
     }
 
+    /// Convierte en absoluta toda ruta de fichero relativa, tomando `base`
+    /// como origen.
+    ///
+    /// Las rutas de un pipeline se resuelven contra la carpeta del propio
+    /// fichero YAML y no contra el directorio de trabajo del proceso. Así una
+    /// carpeta de pipelines es portable: se comporta igual lanzada con la CLI
+    /// desde la raíz del repositorio que desde la aplicación de escritorio,
+    /// que arranca desde donde el sistema quiera.
+    ///
+    /// `path` es la única clave que en la config de un nodo significa
+    /// «fichero en disco»; `records_path` y compañía son otra cosa y no se
+    /// tocan.
+    pub fn resolve_paths(&mut self, base: &std::path::Path) {
+        for node in &mut self.nodes {
+            let (NodeKind::Source { config, .. }
+            | NodeKind::Transform { config, .. }
+            | NodeKind::Sink { config, .. }) = &mut node.kind;
+            let Some(Value::String(ruta)) = config.get_mut("path") else {
+                continue;
+            };
+            let relativa = std::path::Path::new(ruta.as_str());
+            if relativa.is_absolute() {
+                continue;
+            }
+            *ruta = base.join(relativa).to_string_lossy().into_owned();
+        }
+    }
+
     pub fn from_path(path: impl AsRef<std::path::Path>) -> crate::Result<Self> {
         let path = path.as_ref();
         let display = path.display().to_string();
@@ -113,7 +141,9 @@ impl PipelineSpec {
             path: display.clone(),
             source,
         })?;
-        Self::from_yaml_str(&display, &raw)
+        let mut spec = Self::from_yaml_str(&display, &raw)?;
+        spec.resolve_paths(path.parent().unwrap_or_else(|| std::path::Path::new(".")));
+        Ok(spec)
     }
 }
 

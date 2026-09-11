@@ -287,27 +287,72 @@ fn descubre_los_pipelines_del_directorio() {
     );
     write(&dir, "notas.txt", "esto no es un pipeline");
 
-    let entries = discover(dir.path()).expect("descubrir");
-    let found: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-    assert_eq!(found, vec!["alfa", "beta"], "en orden de fichero");
-    assert!(entries[0].is_triggered());
-    assert!(!entries[1].is_triggered());
+    let found = discover(dir.path()).expect("descubrir");
+    let names: Vec<&str> = found.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, vec!["alfa", "beta"], "en orden de fichero");
+    assert!(found.entries[0].is_triggered());
+    assert!(!found.entries[1].is_triggered());
+    assert!(found.broken.is_empty());
+    assert!(found.problems.is_empty());
 }
 
 #[test]
-fn dos_pipelines_con_el_mismo_nombre_se_rechazan() {
+fn un_fichero_roto_no_esconde_a_los_demas() {
+    // Bastaba un pipeline con un secreto sin definir para que el escaneo
+    // entero fallara y la ventana apareciera vacía, como si no hubiera nada.
+    let dir = TempDir::new().expect("tempdir");
+    write(&dir, "a.yaml", &pipeline_yaml("sano", ""));
+    write(&dir, "b.yaml", "esto: no es un pipeline\n");
+    write(
+        &dir,
+        "c.yaml",
+        &pipeline_yaml("otro-sano", "schedule: { cron: \"0 2 * * *\" }"),
+    );
+
+    let found = discover(dir.path()).expect("descubrir");
+    let names: Vec<&str> = found.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, vec!["sano", "otro-sano"]);
+    assert_eq!(found.broken.len(), 1);
+    assert!(found.broken[0].path.ends_with("b.yaml"));
+    assert!(!found.broken[0].error.is_empty());
+}
+
+#[test]
+fn un_cron_invalido_deja_el_fichero_marcado_pero_no_rompe_el_resto() {
+    let dir = TempDir::new().expect("tempdir");
+    write(&dir, "a.yaml", &pipeline_yaml("sano", ""));
+    write(
+        &dir,
+        "b.yaml",
+        &pipeline_yaml("malo", "schedule: { cron: \"esto no es cron\" }"),
+    );
+
+    let found = discover(dir.path()).expect("descubrir");
+    assert_eq!(found.entries.len(), 1);
+    assert_eq!(found.entries[0].name, "sano");
+    assert_eq!(found.broken.len(), 1);
+}
+
+#[test]
+fn con_nombres_repetidos_se_queda_el_primero_y_se_avisa() {
     let dir = TempDir::new().expect("tempdir");
     write(&dir, "uno.yaml", &pipeline_yaml("repetido", ""));
     write(&dir, "dos.yaml", &pipeline_yaml("repetido", ""));
 
-    let err = discover(dir.path()).expect_err("nombres duplicados");
-    assert!(err.to_string().contains("repetido"), "{err}");
+    let found = discover(dir.path()).expect("descubrir");
+    assert_eq!(found.entries.len(), 1, "no puede haber dos con el mismo id");
+    assert_eq!(found.problems.len(), 1);
+    assert!(
+        found.problems[0].contains("repetido"),
+        "{:?}",
+        found.problems
+    );
 }
 
 #[test]
-fn un_after_a_un_pipeline_inexistente_se_rechaza() {
+fn un_after_a_un_pipeline_inexistente_se_avisa() {
     // Callarlo dejaría un pipeline que no arranca nunca sin que nadie sepa
-    // por qué.
+    // por qué; abortar el escaneo escondería los que sí funcionan.
     let dir = TempDir::new().expect("tempdir");
     write(&dir, "a.yaml", &pipeline_yaml("existe", ""));
     write(
@@ -316,6 +361,12 @@ fn un_after_a_un_pipeline_inexistente_se_rechaza() {
         &pipeline_yaml("huerfano", "schedule: { after: [fantasma] }"),
     );
 
-    let err = discover(dir.path()).expect_err("dependencia inexistente");
-    assert!(err.to_string().contains("fantasma"), "{err}");
+    let found = discover(dir.path()).expect("descubrir");
+    assert_eq!(found.entries.len(), 2);
+    assert_eq!(found.problems.len(), 1);
+    assert!(
+        found.problems[0].contains("fantasma"),
+        "{:?}",
+        found.problems
+    );
 }

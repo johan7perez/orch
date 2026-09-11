@@ -29,10 +29,23 @@ pub struct DaemonOptions {
 }
 
 pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> {
-    let entries = discover(&options.dir)?;
-    if entries.is_empty() {
+    let found = discover(&options.dir)?;
+    // Un fichero roto se reporta pero no impide arrancar con los demás: si
+    // uno de veinte tiene un secreto sin definir, los otros diecinueve
+    // tienen que seguir corriendo a su hora.
+    for broken in &found.broken {
+        eprintln!(
+            "aviso: `{}` no se pudo cargar: {}",
+            broken.path.display(),
+            broken.error
+        );
+    }
+    for problem in &found.problems {
+        eprintln!("aviso: {problem}");
+    }
+    if found.is_empty() {
         return Err(OrchError::Other(format!(
-            "no hay ningún pipeline en `{}`",
+            "no hay ningún pipeline utilizable en `{}`",
             options.dir.display()
         )));
     }
@@ -40,10 +53,35 @@ pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> 
     // Se validan todos al arrancar. Un demonio que descubre a las 3 de la
     // mañana que un pipeline no compila no sirve de nada.
     let mut paths: HashMap<String, PathBuf> = HashMap::new();
+    let mut entries = Vec::with_capacity(found.entries.len());
+    for entry in found.entries {
+        match validate(&registry, &entry.path).await {
+            Ok(()) => {
+                paths.insert(entry.name.clone(), entry.path.clone());
+                entries.push(entry);
+            }
+            Err(err) => eprintln!("aviso: `{}` no es válido: {err}", entry.name),
+        }
+    }
+    if entries.is_empty() {
+        return Err(OrchError::Other(
+            "ningún pipeline del directorio es válido".to_string(),
+        ));
+    }
+
+    // `discover` ya avisa de un `after` que apunta a un nombre inexistente,
+    // pero un pipeline puede haberse caído aquí, en la validación, después de
+    // aquella comprobación. Un encadenamiento que cuelga no rompe nada: deja
+    // de dispararse, y en silencio es peor.
     for entry in &entries {
-        let (dag, _) = crate::load(&entry.path, &registry)?;
-        Executor::new(Arc::clone(&registry)).prepare(&dag).await?;
-        paths.insert(entry.name.clone(), entry.path.clone());
+        for esperado in &entry.after {
+            if !paths.contains_key(esperado) {
+                eprintln!(
+                    "aviso: `{}` espera a `{esperado}`, que no está disponible: nunca se disparará por encadenamiento",
+                    entry.name
+                );
+            }
+        }
     }
 
     println!(
@@ -55,8 +93,7 @@ pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> 
     for entry in &entries {
         println!("  {:<width$}  {}", entry.name, entry.describe_trigger());
     }
-    let watched = entries.iter().filter(|e| e.is_triggered()).count();
-    if watched == 0 {
+    if !entries.iter().any(|e| e.is_triggered()) {
         println!("  (ninguno tiene disparadores: el demonio no hará nada)");
     }
     println!("Ctrl-C para parar");
@@ -184,6 +221,12 @@ fn prune(store: &Store, keep_days: Option<i64>) {
         Ok(removed) => println!("podadas {removed} ejecución(es) de más de {days} día(s)"),
         Err(err) => tracing::error!(error = %err, "no se pudo podar el historial"),
     }
+}
+
+async fn validate(registry: &Arc<Registry>, path: &Path) -> Result<()> {
+    let (dag, _) = crate::load(path, registry)?;
+    Executor::new(Arc::clone(registry)).prepare(&dag).await?;
+    Ok(())
 }
 
 fn motivo(reason: Reason) -> &'static str {

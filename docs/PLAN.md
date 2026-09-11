@@ -9,7 +9,7 @@ Leyenda: ✅ hecho · 🚧 en curso · ⬜ pendiente
 
 ## Fase 0 — Core mínimo (CLI)
 
-### 0.1 Motor y vertical slice 🚧
+### 0.1 Motor y vertical slice ✅
 
 - ✅ Workspace de crates (`orch-core`, `orch-connectors`, `orch-cli`).
 - ✅ Modelo declarativo de pipeline en YAML con versión de formato.
@@ -216,14 +216,39 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
 
 ---
 
-## Fase 1 — Shell de escritorio ⬜
+## Fase 1 — Shell de escritorio ✅
 
-- ⬜ Proyecto Tauri con `orch-core` como biblioteca en el proceso backend.
-- ⬜ Puente de eventos: el canal `broadcast` del ejecutor → WebSocket/IPC → frontend.
-- ⬜ Vista de ejecuciones (lista, detalle, logs en vivo).
-- ⬜ Fundamentos de HIG desde el primer prototipo: tipografía del sistema,
-  modo claro/oscuro automático, jerarquía visual, animaciones con propósito.
-- ⬜ Verificar que la UI nunca bloquea: todo el trabajo pesado sigue en Rust.
+- ✅ Aplicación Tauri 2 (`orch-app`) con `orch-core` **dentro del proceso**:
+  no hay servidor local ni demonio aparte, así que no hay puerto que
+  asegurar ni un segundo proceso que se quede colgado.
+- ✅ Puente de eventos: el canal `broadcast` del ejecutor se reemite como
+  evento `orch://event` de Tauri. El frontend no sondea; recibe.
+- ✅ Comandos: `workspace`, `set_directory`, `recent_runs`, `run_detail`,
+  `start_run`, `catalog`.
+- ✅ Vista de pipelines con ejecución en vivo: estado por nodo y registro de
+  eventos según ocurren, reintentos incluidos.
+- ✅ Vista de ejecuciones: historial desde DuckDB, métricas por nodo
+  (filas, filas/s, tiempo, ocupación) y el nodo que marca el ritmo.
+- ✅ Selector de carpeta de pipelines, con la elegida recordada en el estado
+  de la aplicación.
+- ✅ Fundamentos de HIG desde el primer prototipo: tipografía del sistema,
+  escala tipográfica corta, modo claro/oscuro siguiendo al sistema sin
+  interruptor, jerarquía por peso y color, y movimiento con propósito
+  (el latido de un nodo en curso) que respeta `prefers-reduced-motion`.
+- ✅ Un pipeline roto ya no esconde a los demás: el descubrimiento devuelve
+  los válidos, los rotos con su error y los problemas de conjunto (nombres
+  duplicados, `after` colgando). Antes, un `postgres.yaml` sin `ORCH_PG_DSN`
+  dejaba la lista entera vacía. Afecta igual al `orch daemon`.
+- ✅ Las rutas relativas de un pipeline se resuelven **contra la carpeta del
+  fichero YAML**, no contra el directorio de trabajo del proceso. Una
+  aplicación de escritorio arranca desde donde el sistema quiera, así que
+  una carpeta de pipelines tiene que ser portable.
+- ✅ La UI nunca bloquea: cada ejecución se lanza en su propia tarea de Tokio
+  y el frontend sólo pinta eventos.
+- ✅ Verificado conduciendo la ventana real (clic en un pipeline → *Ejecutar*
+  → eventos en vivo → cierre), no sólo con tests.
+- ⬜ Iconos de la aplicación provisionales, generados a mano.
+- ⬜ Probado sólo en Windows; falta pasar por macOS y Linux.
 
 ## Fase 2 — Diseñador visual + SDK de conectores ⬜
 

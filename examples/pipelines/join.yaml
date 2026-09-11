@@ -17,13 +17,13 @@ nodes:
     type: source
     connector: csv
     config:
-      path: examples/data/customers.csv
+      path: ../data/customers.csv
 
   - id: leer_pedidos
     type: source
     connector: csv
     config:
-      path: examples/data/orders.csv
+      path: ../data/orders.csv
 
   # Sólo los pedidos que cuentan. Se resuelve en streaming, antes del join.
   - id: pagados
@@ -52,7 +52,7 @@ nodes:
     type: sink
     connector: csv
     config:
-      path: out/pedidos_por_ciudad.csv
+      path: ../out/pedidos_por_ciudad.csv
 
 edges:
   - { from: leer_clientes, to: cruzar, port: clientes }

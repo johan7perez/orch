@@ -15,7 +15,7 @@ nodes:
     type: source
     connector: csv
     config:
-      path: examples/data/customers.csv
+      path: ../data/customers.csv
 
   # Sólo clientes con gasto relevante. Se resuelve en streaming.
   - id: relevantes
@@ -59,7 +59,7 @@ nodes:
     type: sink
     connector: csv
     config:
-      path: out/clientes_por_ciudad.csv
+      path: ../out/clientes_por_ciudad.csv
 
 edges:
   - { from: leer_clientes, to: relevantes }

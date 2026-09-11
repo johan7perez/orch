@@ -2,6 +2,13 @@
 **/*.rs.bk
 Cargo.lock.orig
 
+# Frontend
+node_modules/
+/ui/dist
+*.tsbuildinfo
+# Generado por tauri-build en cada compilación.
+/crates/orch-app/gen
+
 # Salidas de ejecuciones de ejemplo
 /out
 /examples/out

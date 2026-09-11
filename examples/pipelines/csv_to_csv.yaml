@@ -20,7 +20,7 @@ nodes:
     type: source
     connector: csv
     config:
-      path: examples/data/customers.csv
+      path: ../data/customers.csv
       has_header: true
       delimiter: ","
       # 0 = escanear el fichero entero para inferir tipos.
@@ -48,7 +48,7 @@ nodes:
     type: sink
     connector: csv
     config:
-      path: out/clientes_resumen.csv
+      path: ../out/clientes_resumen.csv
       create_dirs: true
 
 edges:

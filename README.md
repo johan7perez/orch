@@ -41,6 +41,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
 
+> **Con 8 GB de RAM, compila con `-j 2`.** Varios `rustc` en paralelo sobre
+> DataFusion agotan la memoria y el compilador muere con
+> `STATUS_STACK_BUFFER_OVERRUN`, dejando artefactos a medio escribir en
+> `target/debug/deps` que luego dan `E0786`/`E0460`. Si ya ha pasado, hay que
+> limpiar los crates afectados (`cargo clean -p <crate>`) y recompilar.
+
 ## Uso
 
 ```powershell
@@ -65,6 +71,9 @@ cargo run -p orch-cli -- daemon --dir examples/pipelines --keep-days 30
 
 # Informe en JSON, para encadenar con otras herramientas
 cargo run -p orch-cli -- run examples/pipelines/csv_to_csv.yaml --format json
+
+# Aplicación de escritorio (la primera vez, `npm --prefix ui install`)
+npx --prefix ui tauri dev --config ../crates/orch-app/tauri.conf.json
 ```
 
 Medir el motor aislado de disco y red (usa `--release`, la diferencia es de
@@ -113,6 +122,24 @@ Logs detallados: `$env:ORCH_LOG = "orch_core=debug,orch_connectors=debug"`.
 `orch run` devuelve código de salida 0 sólo si todos los nodos terminaron
 correctamente.
 
+## Aplicación de escritorio
+
+El motor corre **dentro del mismo proceso**, como biblioteca: no hay
+servidor, ni puerto, ni serialización de los datos. Lo único que cruza al
+webview son eventos y métricas — los lotes de Arrow no salen de Rust nunca.
+Por eso la ventana sigue fluida mientras el motor mueve millones de filas.
+
+El puente de eventos es otro suscriptor del mismo canal `broadcast` que ya
+alimentaba al visor de la CLI y al escritor de DuckDB: la UI no necesitó
+nada nuevo del motor, sólo escuchar donde ya se estaba emitiendo.
+
+La interfaz sigue las HIG de Apple como principio y no como maquillaje:
+tipografía del sistema, una escala tipográfica de cuatro tamaños, jerarquía
+por peso y color antes que por adornos, modo claro/oscuro siguiendo al
+sistema sin interruptor propio, y movimiento sólo donde comunica algo —el
+latido de un nodo en curso, la entrada de un evento nuevo—, respetando
+`prefers-reduced-motion`.
+
 ## Formato de pipeline
 
 ```yaml
@@ -142,6 +169,12 @@ edges:
   # Sólo importa en un nodo `sql`, que registra cada puerto como una tabla.
   - { from: otra_rama, to: unir, port: pedidos }
 ```
+
+Las rutas de `path` se resuelven **contra la carpeta del fichero YAML**, no
+contra el directorio de trabajo. Una carpeta de pipelines es así portable: se
+comporta igual lanzada con la CLI desde la raíz del repositorio que desde la
+aplicación de escritorio, que arranca desde donde el sistema quiera. Una ruta
+absoluta se deja tal cual.
 
 ### Programación
 
@@ -285,6 +318,8 @@ crates/
   orch-rest/         conector HTTP: paginación, límite de tasa, reintentos
   orch-postgres/     conector PostgreSQL: cursor de lectura, COPY BINARY de escritura
   orch-cli/          binario `orch`
+  orch-app/          aplicación de escritorio (Tauri)
+ui/                  frontend de la aplicación (React + Vite)
 ```
 
 El core no conoce ninguna implementación concreta: recibe un `Registry` con lo
@@ -388,7 +423,7 @@ ahorro es pequeño —montar el catálogo de funciones de DataFusion cuesta meno
 de 1 ms por nodo—, pero en debug son cientos de milisegundos por nodo, así que
 también hace usable el ciclo de desarrollo.
 
-## Limitaciones conocidas de la Fase 0
+## Limitaciones conocidas
 
 - **Los sinks de fichero no son transaccionales.** Si el pipeline falla a
   medias, el CSV de salida queda con las filas escritas hasta ese punto. El
@@ -400,8 +435,6 @@ también hace usable el ciclo de desarrollo.
   significativos falla y pide un `round()`.
 - **Fan-in por concatenación**, no intercalado: las entradas se drenan en el
   orden en que se declararon las aristas.
-- **Sin persistencia.** Métricas y logs viven en memoria y se pierden al
-  terminar el proceso; DuckDB entra en la Fase 0.4.
 - **Las ramas independientes no se cancelan** cuando otra falla: terminan su
   trabajo y el run se marca como fallido al final.
 - **Cada entrada es un flujo de una sola pasada.** Si un plan intenta escanear

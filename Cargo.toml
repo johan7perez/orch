@@ -9,6 +9,7 @@ members = [
     "crates/orch-store",
     "crates/orch-schedule",
     "crates/orch-cli",
+    "crates/orch-app",
 ]
 
 [workspace.package]
@@ -42,6 +43,9 @@ bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde", "clock"] }
 chrono-tz = "0.10"
 cron = "0.17"
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 # `bundled` compila DuckDB desde fuente: la primera build es larga, pero el
 # binario no depende de que haya una libduckdb instalada en la máquina.
 duckdb = { version = "1", features = ["bundled"] }

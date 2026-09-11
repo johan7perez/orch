@@ -12,5 +12,5 @@ mod cron;
 mod discover;
 mod scheduler;
 
-pub use discover::discover;
+pub use discover::{discover, Broken, Discovery};
 pub use scheduler::{CronTrigger, Entry, Launch, Reason, Scheduler};
