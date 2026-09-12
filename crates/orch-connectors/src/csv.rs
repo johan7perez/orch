@@ -11,8 +11,7 @@ use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use orch_core::{
-    parse_config, Input, InputSchemas, NodeContext, OrchError, Output, Registry, Result, Sink,
-    Source,
+    Input, InputSchemas, NodeContext, OrchError, Output, Registry, Result, Sink, Source,
 };
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -20,17 +19,17 @@ use tokio::sync::mpsc;
 use crate::util::{comma, delimiter_byte, yes};
 
 pub fn register(registry: &mut Registry) {
-    registry.register_source("csv", |node, config| {
-        let source: Arc<dyn Source> = Arc::new(CsvSource::new(node, parse_config(node, config)?));
+    registry.register_source("csv", |node, config: CsvSourceConfig| {
+        let source: Arc<dyn Source> = Arc::new(CsvSource::new(node, config));
         Ok(source)
     });
-    registry.register_sink("csv", |node, config| {
-        let sink: Arc<dyn Sink> = Arc::new(CsvSink::new(node, parse_config(node, config)?));
+    registry.register_sink("csv", |node, config: CsvSinkConfig| {
+        let sink: Arc<dyn Sink> = Arc::new(CsvSink::new(node, config));
         Ok(sink)
     });
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CsvSourceConfig {
     pub path: PathBuf,
@@ -193,7 +192,7 @@ fn read_blocking(
     Ok(())
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CsvSinkConfig {
     pub path: PathBuf,

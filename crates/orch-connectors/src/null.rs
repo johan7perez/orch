@@ -7,10 +7,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use orch_core::{Input, NodeContext, Registry, Result, Sink};
+use orch_core::{Input, NoConfig, NodeContext, Registry, Result, Sink};
 
 pub fn register(registry: &mut Registry) {
-    registry.register_sink("null", |_node, _config| {
+    registry.register_sink("null", |_node, _config: NoConfig| {
         let sink: Arc<dyn Sink> = Arc::new(NullSink);
         Ok(sink)
     });

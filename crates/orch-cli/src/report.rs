@@ -316,3 +316,91 @@ fn thousands(value: u64) -> String {
     }
     out
 }
+
+/// La config que acepta un componente, para quien escribe el YAML a mano.
+///
+/// Sale del mismo esquema que alimenta al inspector de la ventana, que a su
+/// vez sale del struct que deserializa la config: los tres dicen lo mismo
+/// porque los tres son la misma definición.
+pub fn print_component(registry: &Registry, name: &str) -> bool {
+    let kinds = [
+        ("source", registry.source_names()),
+        ("transform", registry.transform_names()),
+        ("sink", registry.sink_names()),
+    ];
+
+    let mut encontrado = false;
+    for (kind, names) in kinds {
+        if !names.contains(&name) {
+            continue;
+        }
+        let Some(schema) = registry.schema(kind, name) else {
+            continue;
+        };
+        encontrado = true;
+        println!();
+        println!("{kind} `{name}`");
+
+        let required: Vec<&str> = schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+
+        let Some(props) = schema.get("properties").and_then(|v| v.as_object()) else {
+            println!("  (sin configuración)");
+            continue;
+        };
+        if props.is_empty() {
+            println!("  (sin configuración)");
+            continue;
+        }
+
+        let ancho = props.keys().map(String::len).max().unwrap_or(4);
+        for (campo, def) in props {
+            let obligatorio = required.contains(&campo.as_str());
+            let nota = if obligatorio {
+                "obligatorio".to_string()
+            } else {
+                match def.get("default") {
+                    Some(serde_json::Value::Null) | None => "opcional".to_string(),
+                    Some(valor) => format!("por defecto: {valor}"),
+                }
+            };
+            println!("  {campo:<ancho$}  {:<9}  {nota}", tipo(def));
+            // La descripción viene de los comentarios `///` del struct.
+            if let Some(texto) = def.get("description").and_then(|v| v.as_str()) {
+                for linea in texto.lines() {
+                    println!("  {:ancho$}  {linea}", "");
+                }
+            }
+        }
+    }
+    encontrado
+}
+
+/// Nombre legible del tipo JSON Schema.
+fn tipo(def: &serde_json::Value) -> String {
+    let bruto = match def.get("type") {
+        // Un campo opcional sale como `["integer", "null"]`: interesa el que
+        // no es null.
+        Some(serde_json::Value::Array(tipos)) => tipos
+            .iter()
+            .filter_map(|t| t.as_str())
+            .find(|t| *t != "null")
+            .unwrap_or("?"),
+        Some(serde_json::Value::String(t)) => t.as_str(),
+        _ if def.get("enum").is_some() || def.get("oneOf").is_some() => "enum",
+        _ => "?",
+    };
+    match bruto {
+        "string" => "texto",
+        "integer" => "entero",
+        "number" => "número",
+        "boolean" => "booleano",
+        "array" => "lista",
+        "object" => "mapa",
+        otro => otro,
+    }
+    .to_string()
+}

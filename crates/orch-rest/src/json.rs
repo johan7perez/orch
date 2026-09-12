@@ -14,7 +14,7 @@ use serde_json::Value;
 ///
 /// Se declara como lista y no como mapa para que el orden de las columnas sea
 /// el que se escribe: un mapa de YAML pierde el orden al pasar por JSON.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ColumnSpec {
     pub name: String,

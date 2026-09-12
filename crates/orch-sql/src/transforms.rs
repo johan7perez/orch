@@ -14,9 +14,7 @@ use std::collections::BTreeMap;
 
 use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
-use orch_core::{
-    parse_config, Input, InputSchemas, NodeContext, OrchError, Output, Result, Transform,
-};
+use orch_core::{Input, InputSchemas, NodeContext, OrchError, Output, Result, Transform};
 use serde::Deserialize;
 
 use crate::engine::{self, Plan};
@@ -89,7 +87,7 @@ impl Transform for SqlTransform {
 
 // --- sql --------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SqlConfig {
     pub query: String,
@@ -105,8 +103,7 @@ pub struct SqlConfig {
     pub memory_limit_mb: Option<usize>,
 }
 
-pub fn build_sql(node: &str, config: &serde_json::Value) -> Result<SqlTransform> {
-    let config: SqlConfig = parse_config(node, config)?;
+pub fn build_sql(node: &str, config: SqlConfig) -> Result<SqlTransform> {
     if config.query.trim().is_empty() {
         return Err(OrchError::config(node, "`query` no puede estar vacía"));
     }
@@ -122,7 +119,7 @@ pub fn build_sql(node: &str, config: &serde_json::Value) -> Result<SqlTransform>
 
 // --- filter -----------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FilterConfig {
     /// Predicado SQL, sin la palabra `WHERE`.
@@ -134,8 +131,7 @@ pub struct FilterConfig {
     pub memory_limit_mb: Option<usize>,
 }
 
-pub fn build_filter(node: &str, config: &serde_json::Value) -> Result<SqlTransform> {
-    let config: FilterConfig = parse_config(node, config)?;
+pub fn build_filter(node: &str, config: FilterConfig) -> Result<SqlTransform> {
     if config.predicate.trim().is_empty() {
         return Err(OrchError::config(node, "`where` no puede estar vacío"));
     }
@@ -156,7 +152,7 @@ pub fn build_filter(node: &str, config: &serde_json::Value) -> Result<SqlTransfo
 
 // --- derive -----------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeriveConfig {
     /// Mapa `nombre_nuevo: expresión SQL`. Se añaden a las columnas existentes.
@@ -167,8 +163,7 @@ pub struct DeriveConfig {
     pub memory_limit_mb: Option<usize>,
 }
 
-pub fn build_derive(node: &str, config: &serde_json::Value) -> Result<SqlTransform> {
-    let config: DeriveConfig = parse_config(node, config)?;
+pub fn build_derive(node: &str, config: DeriveConfig) -> Result<SqlTransform> {
     if config.columns.is_empty() {
         return Err(OrchError::config(node, "`columns` no puede estar vacío"));
     }
@@ -191,7 +186,7 @@ pub fn build_derive(node: &str, config: &serde_json::Value) -> Result<SqlTransfo
 
 // --- aggregate --------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AggregateConfig {
     /// Columnas por las que agrupar. Vacío = una sola fila de totales.
@@ -205,8 +200,7 @@ pub struct AggregateConfig {
     pub memory_limit_mb: Option<usize>,
 }
 
-pub fn build_aggregate(node: &str, config: &serde_json::Value) -> Result<SqlTransform> {
-    let config: AggregateConfig = parse_config(node, config)?;
+pub fn build_aggregate(node: &str, config: AggregateConfig) -> Result<SqlTransform> {
     if config.aggregates.is_empty() {
         return Err(OrchError::config(node, "`aggregates` no puede estar vacío"));
     }

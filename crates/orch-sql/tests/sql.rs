@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use orch_core::{Dag, Executor, NodeStatus, PipelineSpec, Registry, RunReport};
+use orch_core::{parse_config, Dag, Executor, NodeStatus, PipelineSpec, Registry, RunReport};
 use tempfile::TempDir;
 
 fn registry() -> Arc<Registry> {
@@ -58,7 +58,8 @@ fn aggregate_genera_la_query_esperada() {
         "group_by": ["city"],
         "aggregates": { "total": "sum(spend)", "clientes": "count(*)" },
     });
-    let transform = orch_sql::build_aggregate("agg", &config).expect("config válida");
+    let transform = orch_sql::build_aggregate("agg", parse_config("agg", &config).expect("config"))
+        .expect("config válida");
     // El mapa de agregados es un BTreeMap: el orden de columnas es estable.
     assert_eq!(
         transform.query(),
@@ -69,7 +70,8 @@ fn aggregate_genera_la_query_esperada() {
 #[test]
 fn filter_genera_la_query_esperada() {
     let config = serde_json::json!({ "where": "spend > 500" });
-    let transform = orch_sql::build_filter("f", &config).expect("config válida");
+    let transform = orch_sql::build_filter("f", parse_config("f", &config).expect("config"))
+        .expect("config válida");
     assert_eq!(
         transform.query(),
         r#"SELECT * FROM "input" WHERE (spend > 500)"#
@@ -81,7 +83,8 @@ fn un_identificador_con_comillas_se_escapa() {
     let config = serde_json::json!({
         "aggregates": { "raro\"alias": "count(*)" },
     });
-    let transform = orch_sql::build_aggregate("agg", &config).expect("config válida");
+    let transform = orch_sql::build_aggregate("agg", parse_config("agg", &config).expect("config"))
+        .expect("config válida");
     assert!(
         transform.query().contains(r#"AS "raro""alias""#),
         "{}",

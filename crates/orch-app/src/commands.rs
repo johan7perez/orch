@@ -202,18 +202,41 @@ pub async fn start_run(app: AppHandle, state: State<'_, AppState>, path: String)
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Catalog {
-    pub sources: Vec<String>,
-    pub transforms: Vec<String>,
-    pub sinks: Vec<String>,
+    pub sources: Vec<Component>,
+    pub transforms: Vec<Component>,
+    pub sinks: Vec<Component>,
+}
+
+/// Un componente registrado, con el esquema de su config.
+///
+/// El esquema sale del mismo struct que deserializa la config, así que no
+/// puede quedarse desfasado: incluye los campos, sus tipos, cuáles son
+/// obligatorios y la descripción que viene de los comentarios `///`.
+#[derive(Debug, Clone, Serialize)]
+pub struct Component {
+    pub name: String,
+    pub schema: serde_json::Value,
 }
 
 #[tauri::command]
 pub async fn catalog(state: State<'_, AppState>) -> Response<Catalog> {
-    let owned = |names: Vec<&str>| names.into_iter().map(str::to_string).collect();
+    let listar = |kind: &'static str, names: Vec<&str>| -> Vec<Component> {
+        names
+            .into_iter()
+            .map(|name| Component {
+                schema: state
+                    .registry
+                    .schema(kind, name)
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                name: name.to_string(),
+            })
+            .collect()
+    };
     Ok(Catalog {
-        sources: owned(state.registry.source_names()),
-        transforms: owned(state.registry.transform_names()),
-        sinks: owned(state.registry.sink_names()),
+        sources: listar("source", state.registry.source_names()),
+        transforms: listar("transform", state.registry.transform_names()),
+        sinks: listar("sink", state.registry.sink_names()),
     })
 }
 

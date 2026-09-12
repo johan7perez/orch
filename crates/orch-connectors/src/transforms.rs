@@ -13,22 +13,20 @@ use std::sync::Arc;
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use orch_core::{
-    parse_config, Input, InputSchemas, NodeContext, OrchError, Output, Registry, Result, Transform,
-};
+use orch_core::{Input, InputSchemas, NodeContext, OrchError, Output, Registry, Result, Transform};
 use serde::Deserialize;
 
 pub fn register(registry: &mut Registry) {
     registry.register_transform("select", |node, config| {
-        let t: Arc<dyn Transform> = Arc::new(Select::new(node, parse_config(node, config)?));
+        let t: Arc<dyn Transform> = Arc::new(Select::new(node, config));
         Ok(t)
     });
     registry.register_transform("rename", |node, config| {
-        let t: Arc<dyn Transform> = Arc::new(Rename::new(node, parse_config(node, config)?));
+        let t: Arc<dyn Transform> = Arc::new(Rename::new(node, config));
         Ok(t)
     });
     registry.register_transform("limit", |node, config| {
-        let t: Arc<dyn Transform> = Arc::new(Limit::new(node, parse_config(node, config)?));
+        let t: Arc<dyn Transform> = Arc::new(Limit::new(node, config));
         Ok(t)
     });
 }
@@ -44,7 +42,7 @@ fn column_names(schema: &Schema) -> String {
 
 // --- select -----------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SelectConfig {
     /// Columnas a conservar, en el orden en que deben quedar.
@@ -130,7 +128,7 @@ impl Transform for Select {
 
 // --- rename -----------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RenameConfig {
     /// Mapa `nombre_actual: nombre_nuevo`.
@@ -209,7 +207,7 @@ impl Transform for Rename {
 
 // --- limit ------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LimitConfig {
     pub rows: u64,

@@ -56,6 +56,33 @@ export interface Graph {
   problem: string | null;
 }
 
+/** Un componente registrado, con el esquema JSON de su config. */
+export interface Component {
+  name: string;
+  schema: EsquemaObjeto | null;
+}
+
+export interface Catalog {
+  sources: Component[];
+  transforms: Component[];
+  sinks: Component[];
+}
+
+/** Lo que nos interesa del JSON Schema que genera `schemars`. */
+export interface EsquemaObjeto {
+  properties?: Record<string, EsquemaCampo>;
+  required?: string[];
+}
+
+export interface EsquemaCampo {
+  /** `"string"`, o `["integer", "null"]` cuando el campo es opcional. */
+  type?: string | string[];
+  /** Sale de los comentarios `///` del struct de Rust. */
+  description?: string;
+  default?: unknown;
+  enum?: unknown[];
+}
+
 export interface RunSummary {
   run_id: string;
   pipeline: string;
@@ -147,6 +174,7 @@ export const api = {
   runDetail: (runId: string) => invoke<RunDetail>("run_detail", { runId }),
   startRun: (path: string) => invoke<void>("start_run", { path }),
   pipelineGraph: (path: string) => invoke<Graph>("pipeline_graph", { path }),
+  catalog: () => invoke<Catalog>("catalog"),
 };
 
 /** Se engancha al flujo de eventos del motor. */

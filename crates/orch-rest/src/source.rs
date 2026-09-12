@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
-use orch_core::{parse_config, NodeContext, OrchError, Output, Registry, Result, Source};
+use orch_core::{NodeContext, OrchError, Output, Registry, Result, Source};
 use reqwest::Method;
 use serde::Deserialize;
 use serde_json::Value;
@@ -15,13 +15,13 @@ use crate::json::{self, ColumnSpec, JsonBatcher};
 
 pub fn register(registry: &mut Registry) {
     registry.register_source("rest", |node, config| {
-        let source: Arc<dyn Source> = Arc::new(RestSource::new(node, parse_config(node, config)?)?);
+        let source: Arc<dyn Source> = Arc::new(RestSource::new(node, config)?);
         Ok(source)
     });
 }
 
 /// Cómo pedir la siguiente página.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Pagination {
     /// Una sola petición.
@@ -81,7 +81,7 @@ fn get() -> String {
     "GET".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RestSourceConfig {
     pub url: String,

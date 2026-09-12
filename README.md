@@ -257,6 +257,28 @@ Ejemplo completo en [examples/pipelines/join.yaml](examples/pipelines/join.yaml)
 
 ### Componentes disponibles
 
+Esta tabla es un resumen. La lista exacta y siempre al día la da el propio
+binario, porque sale del mismo struct que deserializa la config:
+
+```powershell
+orch connectors           # todos los nombres
+orch connectors csv       # qué config acepta, con tipos y valores por defecto
+```
+
+```
+source `csv`
+  path        texto      obligatorio
+  has_header  booleano   por defecto: true
+  delimiter   texto      por defecto: ","
+  infer_rows  entero     por defecto: 1000
+              Filas que se leen para inferir el esquema. `0` = escanear el
+              fichero completo (más lento, pero seguro con columnas cuyo
+              tipo sólo se distingue al final).
+```
+
+Lo mismo alimenta al inspector del lienzo, que además enseña los campos que
+**no** están escritos, con el valor que tomarían.
+
 | Tipo | Nombre | Config |
 |---|---|---|
 | source | `csv` | `path`, `has_header`, `delimiter`, `infer_rows` (0 = fichero entero), `batch_size` |

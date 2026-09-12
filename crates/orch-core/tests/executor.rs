@@ -11,8 +11,8 @@ use orch_core::arrow::array::Int64Array;
 use orch_core::arrow::datatypes::{DataType, Field, Schema};
 use orch_core::arrow::record_batch::RecordBatch;
 use orch_core::{
-    Dag, Executor, Input, NodeContext, NodeStatus, OrchError, Output, PipelineSpec, Registry,
-    Result, RunReport, Sink, Source,
+    Dag, Executor, Input, NoConfig, NodeContext, NodeStatus, OrchError, Output, PipelineSpec,
+    Registry, Result, RunReport, Sink, Source,
 };
 
 fn batch(rows: usize, start: i64) -> RecordBatch {
@@ -158,56 +158,59 @@ impl Probe {
     }
 }
 
+// Configs de los componentes de prueba. Ahora que el registro deserializa por
+// ti, declararlas sale más corto que hurgar en el `Value` a mano, y de paso
+// los campos que faltan los reporta serde con el nombre del nodo.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct EmitterConfig {
+    batches: usize,
+    rows: usize,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct FlakyConfig {
+    fail_until: u32,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SlowConfig {
+    ms_per_batch: u64,
+}
+
 fn registry(probe: &Probe) -> Arc<Registry> {
     let mut registry = Registry::new();
 
-    registry.register_source("emitter", |node, config| {
-        let batches = config
-            .get("batches")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| OrchError::config(node, "falta `batches`"))?;
-        let rows = config
-            .get("rows")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| OrchError::config(node, "falta `rows`"))?;
+    registry.register_source("emitter", |_node, config: EmitterConfig| {
         let source: Arc<dyn Source> = Arc::new(Emitter {
-            batches: batches as usize,
-            rows: rows as usize,
+            batches: config.batches,
+            rows: config.rows,
         });
         Ok(source)
     });
 
-    registry.register_source("exploding", |_node, _config| {
+    registry.register_source("exploding", |_node, _config: NoConfig| {
         let source: Arc<dyn Source> = Arc::new(Exploding);
         Ok(source)
     });
 
     let attempts = Arc::clone(&probe.attempts);
-    registry.register_source("flaky", move |node, config| {
-        let fail_until = config
-            .get("fail_until")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| OrchError::config(node, "falta `fail_until`"))?;
+    registry.register_source("flaky", move |_node, config: FlakyConfig| {
         let source: Arc<dyn Source> = Arc::new(Flaky {
-            fail_until: fail_until as u32,
+            fail_until: config.fail_until,
             attempts: Arc::clone(&attempts),
         });
         Ok(source)
     });
 
-    registry.register_source("emits-then-fails", |_node, _config| {
+    registry.register_source("emits-then-fails", |_node, _config: NoConfig| {
         let source: Arc<dyn Source> = Arc::new(EmitsThenFails);
         Ok(source)
     });
 
     let slow_rows = Arc::clone(&probe.rows);
-    registry.register_sink("slow", move |node, config| {
-        let per_batch = config
-            .get("ms_per_batch")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| OrchError::config(node, "falta `ms_per_batch`"))?;
+    registry.register_sink("slow", move |_node, config: SlowConfig| {
         let sink: Arc<dyn Sink> = Arc::new(SlowSink {
-            per_batch: std::time::Duration::from_millis(per_batch),
+            per_batch: std::time::Duration::from_millis(config.ms_per_batch),
             rows: Arc::clone(&slow_rows),
         });
         Ok(sink)
@@ -215,7 +218,7 @@ fn registry(probe: &Probe) -> Arc<Registry> {
 
     let rows = Arc::clone(&probe.rows);
     let finished = Arc::clone(&probe.finished);
-    registry.register_sink("recorder", move |_node, _config| {
+    registry.register_sink("recorder", move |_node, _config: NoConfig| {
         let sink: Arc<dyn Sink> = Arc::new(Recorder {
             rows: Arc::clone(&rows),
             finished: Arc::clone(&finished),

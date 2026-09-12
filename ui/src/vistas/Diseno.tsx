@@ -17,9 +17,10 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import { api, type Graph, type GraphNode, type PipelineInfo } from "../api";
+import { api, type Catalog, type EsquemaObjeto, type Graph, type PipelineInfo } from "../api";
 import { aristasDe, disponer } from "../lienzo/disposicion";
 import { NodoPipeline } from "../lienzo/NodoPipeline";
+import { Inspector } from "./Inspector";
 
 const TIPOS_DE_NODO = { pipeline: NodoPipeline };
 
@@ -31,6 +32,16 @@ export function Diseno({ pipeline }: Props) {
   const [grafo, setGrafo] = useState<Graph | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [elegido, setElegido] = useState<string | null>(null);
+  // El catálogo se pide una vez: los componentes registrados no cambian
+  // mientras la ventana está abierta.
+  const [catalogo, setCatalogo] = useState<Catalog | null>(null);
+
+  useEffect(() => {
+    api
+      .catalog()
+      .then(setCatalogo)
+      .catch(() => setCatalogo(null));
+  }, []);
 
   useEffect(() => {
     let vigente = true;
@@ -88,65 +99,15 @@ export function Diseno({ pipeline }: Props) {
         </ReactFlow>
 
         {nodoElegido ? (
-          <Inspector nodo={nodoElegido} onCerrar={() => setElegido(null)} />
+          <Inspector
+            nodo={nodoElegido}
+            esquema={esquemaDe(catalogo, nodoElegido.kind, nodoElegido.component)}
+            onCerrar={() => setElegido(null)}
+          />
         ) : null}
       </div>
     </>
   );
-}
-
-function Inspector({ nodo, onCerrar }: { nodo: GraphNode; onCerrar: () => void }) {
-  const entradas = Object.entries(nodo.config ?? {});
-  return (
-    <aside className="inspector">
-      <header className="inspector__cabecera">
-        <div className="barra__texto">
-          <h2 className="inspector__titulo">{nodo.id}</h2>
-          <p className="barra__sub">
-            {nodo.kind} · {nodo.component}
-          </p>
-        </div>
-        <button className="inspector__cerrar" onClick={onCerrar} aria-label="Cerrar">
-          ✕
-        </button>
-      </header>
-
-      <div className="inspector__cuerpo">
-        {!nodo.known ? (
-          <p className="nota nota--error">
-            El componente <strong>{nodo.component}</strong> no está registrado. El
-            pipeline fallará al ejecutarse.
-          </p>
-        ) : null}
-
-        {entradas.length === 0 ? (
-          <p className="nota">Sin configuración.</p>
-        ) : (
-          <dl className="campos">
-            {entradas.map(([clave, valor]) => (
-              <div className="campo" key={clave}>
-                <dt className="campo__nombre">{clave}</dt>
-                <dd className="campo__valor">{formatear(valor)}</dd>
-              </div>
-            ))}
-          </dl>
-        )}
-
-        {nodo.after.length > 0 ? (
-          <>
-            <p className="seccion">Espera a</p>
-            <p className="campo__valor">{nodo.after.join(", ")}</p>
-          </>
-        ) : null}
-      </div>
-    </aside>
-  );
-}
-
-/** Un secreto llega sin expandir; se enseña tal cual, que es lo que el fichero dice. */
-function formatear(valor: unknown): string {
-  if (typeof valor === "string") return valor;
-  return JSON.stringify(valor, null, 2) ?? String(valor);
 }
 
 function construir(
@@ -192,4 +153,25 @@ function construir(
   }));
 
   return { nodos, aristas };
+}
+
+/**
+ * El esquema del componente de un nodo.
+ *
+ * El catálogo se pide una vez y se reutiliza: los componentes registrados no
+ * cambian mientras la ventana está abierta.
+ */
+function esquemaDe(
+  catalogo: Catalog | null,
+  kind: string,
+  componente: string,
+): EsquemaObjeto | null {
+  if (!catalogo) return null;
+  const lista =
+    kind === "source"
+      ? catalogo.sources
+      : kind === "sink"
+        ? catalogo.sinks
+        : catalogo.transforms;
+  return lista.find((c) => c.name === componente)?.schema ?? null;
 }

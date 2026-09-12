@@ -51,7 +51,12 @@ enum Command {
         no_store: bool,
     },
     /// Lista los conectores y transformaciones disponibles.
-    Connectors,
+    ///
+    /// Con un nombre, enseña la config que acepta ese componente.
+    Connectors {
+        /// Componente del que enseñar la configuración (`csv`, `sql`…).
+        component: Option<String>,
+    },
     /// Últimas ejecuciones guardadas.
     Runs {
         #[arg(long, default_value_t = 20)]
@@ -197,10 +202,21 @@ async fn dispatch(command: Command, store_path: &std::path::Path) -> orch_core::
             Ok(ExitCode::SUCCESS)
         }
 
-        Command::Connectors => {
-            report::print_registry(&registry);
-            Ok(ExitCode::SUCCESS)
-        }
+        Command::Connectors { component } => match component {
+            None => {
+                report::print_registry(&registry);
+                Ok(ExitCode::SUCCESS)
+            }
+            Some(name) => {
+                if report::print_component(&registry, &name) {
+                    Ok(ExitCode::SUCCESS)
+                } else {
+                    Err(orch_core::OrchError::Other(format!(
+                        "no hay ningún componente `{name}`. `orch connectors` los lista todos"
+                    )))
+                }
+            }
+        },
 
         Command::Validate { pipeline } => {
             let (dag, pushed) = load(&pipeline, &registry)?;

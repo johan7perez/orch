@@ -846,3 +846,42 @@ button {
 .nota--suelta {
   margin: 12px 20px 0;
 }
+
+/* --- Campos del inspector --- */
+
+/* Un campo que nadie escribió: se ve, con su valor por defecto, pero en
+   segundo plano. Saber qué se puede poner vale tanto como ver qué hay. */
+.campo--ausente {
+  opacity: 0.55;
+}
+
+.campo__nombre {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.campo__tipo {
+  font-size: var(--texto-xs);
+  color: var(--texto-terciario);
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--fuente-mono);
+}
+
+/* Un obligatorio que falta, o un campo que el esquema no conoce: las dos
+   cosas revientan al ejecutar, así que se marcan igual. */
+.campo__falta {
+  font-size: var(--texto-xs);
+  color: var(--error);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.campo__ayuda {
+  margin: 2px 0 0;
+  font-size: var(--texto-xs);
+  color: var(--texto-secundario);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}

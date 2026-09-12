@@ -7,16 +7,16 @@
 use std::sync::Arc;
 
 use orch_core::pushdown::{self, PushdownOp};
-use orch_core::{PipelineSpec, Registry, Source};
+use orch_core::{NoConfig, PipelineSpec, Registry, Source};
 use serde_json::{json, Value};
 
 /// Registro con un origen ficticio que acepta lo que se le empuje.
 fn registry() -> Registry {
     let mut registry = Registry::new();
-    registry.register_source("absorbente", |_node, _config| {
+    registry.register_source("absorbente", |_node, _config: NoConfig| {
         unreachable!("estos tests no ejecutan nada")
     });
-    registry.register_source("terco", |_node, _config| {
+    registry.register_source("terco", |_node, _config: NoConfig| {
         unreachable!("estos tests no ejecutan nada")
     });
     registry.register_pushdown("absorbente", |config, op| {

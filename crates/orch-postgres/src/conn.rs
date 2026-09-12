@@ -26,7 +26,7 @@ use tokio_postgres::{Client, Config, NoTls};
 ///
 /// `verify` fuerza cualquiera de los dos comportamientos. Un certificado
 /// autofirmado con `require` necesita `root_cert` o `verify: false`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TlsConfig {
     /// Sin indicar, se decide por el `sslmode`.

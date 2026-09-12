@@ -14,7 +14,7 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::pin_mut;
-use orch_core::{parse_config, Input, NodeContext, OrchError, Registry, Result, Sink};
+use orch_core::{Input, NodeContext, OrchError, Registry, Result, Sink};
 use postgres_types::{ToSql, Type};
 use serde::Deserialize;
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
@@ -25,12 +25,12 @@ use crate::types::{arrow_type, value_at, SqlValue};
 
 pub fn register(registry: &mut Registry) {
     registry.register_sink("postgres", |node, config| {
-        let sink: Arc<dyn Sink> = Arc::new(PostgresSink::new(node, parse_config(node, config)?)?);
+        let sink: Arc<dyn Sink> = Arc::new(PostgresSink::new(node, config)?);
         Ok(sink)
     });
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresSinkConfig {
     pub dsn: String,

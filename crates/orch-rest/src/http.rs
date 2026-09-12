@@ -40,7 +40,7 @@ pub fn default_timeout_ms() -> u64 {
     30_000
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HttpRetryConfig {
     #[serde(default = "default_max_attempts")]

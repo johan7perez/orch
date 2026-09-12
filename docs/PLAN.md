@@ -278,13 +278,32 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
   el lateral: el lateral es *qué* estás navegando y esto son dos vistas del
   *mismo* pipeline. La barra y el botón de ejecutar son comunes a las dos.
 
-### 2.2 Esquemas de config e inspector generado ⬜
+### 2.2 Esquemas de config e inspector generado ✅
 
-- ⬜ Esquema JSON por conector y transformación, derivado del propio struct
-  de config, para no mantener dos definiciones.
-- ⬜ Inspector como formulario generado a partir del esquema, con los tipos y
-  los valores por defecto reales.
-- ⬜ El catálogo pasa a llevar el esquema, no sólo el nombre.
+- ✅ **El esquema sale del mismo struct que deserializa la config.**
+  `Registry::register_*` toma ahora el tipo de config (inferido de la
+  anotación del cierre) y de él saca las dos cosas: el parseo y el esquema
+  JSON. No hay dos definiciones, así que no pueden desincronizarse.
+- ✅ Efecto secundario: los conectores dejaron de repetir
+  `parse_config(node, config)?` en los 17 puntos de registro; ahora lo hace
+  el registro una sola vez.
+- ✅ Las descripciones del esquema salen de los comentarios `///` que ya
+  tenían los campos, así que no hay documentación aparte que envejezca.
+- ✅ Un nodo sin `config:` ya no falla. Llegaba como `null` y serde lo
+  rechazaba donde esperaba un struct; ahora se trata como `{}`, y un
+  conector con todos los campos opcionales se puede escribir sin esa línea.
+- ✅ `NoConfig` para los componentes que no llevan configuración. No es lo
+  mismo que ignorar el bloque: al llevar `deny_unknown_fields`, un `config:`
+  con algo dentro se rechaza en vez de aceptarse en silencio.
+- ✅ El catálogo lleva el esquema, no sólo el nombre.
+- ✅ Inspector generado: enseña **todos** los campos del componente, no sólo
+  los escritos. Los ausentes salen en segundo plano con su valor por
+  defecto, porque saber qué se puede poner vale tanto como ver qué hay.
+  Marca en rojo un obligatorio que falta y una clave que el esquema no
+  conoce —con `deny_unknown_fields` las dos revientan al ejecutar, y verlo
+  en el inspector ahorra el viaje—.
+- ✅ `orch connectors <nombre>`: la misma información para quien escribe el
+  YAML a mano.
 
 ### 2.3 Edición y escritura del YAML ⬜
 

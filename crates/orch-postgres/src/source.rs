@@ -5,9 +5,7 @@ use std::sync::Arc;
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use orch_core::{
-    parse_config, NodeContext, OrchError, Output, PushdownOp, Registry, Result, Source,
-};
+use orch_core::{NodeContext, OrchError, Output, PushdownOp, Registry, Result, Source};
 use serde::Deserialize;
 use serde_json::json;
 use tokio_postgres::Statement;
@@ -17,8 +15,7 @@ use crate::types::{arrow_type, ColumnBuilder};
 
 pub fn register(registry: &mut Registry) {
     registry.register_source("postgres", |node, config| {
-        let source: Arc<dyn Source> =
-            Arc::new(PostgresSource::new(node, parse_config(node, config)?)?);
+        let source: Arc<dyn Source> = Arc::new(PostgresSource::new(node, config)?);
         Ok(source)
     });
 
@@ -64,7 +61,7 @@ fn default_fetch_size() -> usize {
     10_000
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresSourceConfig {
     /// Cadena de conexión de libpq. La contraseña debería venir de

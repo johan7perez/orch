@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use orch_core::{parse_config, Input, NodeContext, OrchError, Registry, Result, Sink};
+use orch_core::{Input, NodeContext, OrchError, Registry, Result, Sink};
 use reqwest::Method;
 use serde::Deserialize;
 
@@ -14,13 +14,13 @@ use crate::json;
 
 pub fn register(registry: &mut Registry) {
     registry.register_sink("rest", |node, config| {
-        let sink: Arc<dyn Sink> = Arc::new(RestSink::new(node, parse_config(node, config)?)?);
+        let sink: Arc<dyn Sink> = Arc::new(RestSink::new(node, config)?);
         Ok(sink)
     });
 }
 
 /// Formato del cuerpo de cada petición.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BodyFormat {
     /// `[{...}, {...}]` con `Content-Type: application/json`.
@@ -38,7 +38,7 @@ fn default_rows_per_request() -> usize {
     500
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RestSinkConfig {
     pub url: String,

@@ -78,5 +78,22 @@ pub fn parse_config<T: serde::de::DeserializeOwned>(
     node: &str,
     config: &serde_json::Value,
 ) -> Result<T> {
-    serde_json::from_value(config.clone()).map_err(|e| OrchError::config(node, e))
+    // Un nodo sin `config:` llega como `null`, y serde rechaza un null donde
+    // espera un struct. Tratarlo como `{}` es lo que el fichero quiere decir
+    // y hace que un conector cuyos campos son todos opcionales pueda
+    // escribirse sin la línea `config:`.
+    let config = match config {
+        serde_json::Value::Null => serde_json::Value::Object(Default::default()),
+        otro => otro.clone(),
+    };
+    serde_json::from_value(config).map_err(|e| OrchError::config(node, e))
 }
+
+/// Config de un componente que no tiene ninguna.
+///
+/// No es lo mismo que ignorar el bloque: al llevar `deny_unknown_fields`, un
+/// `config:` con algo dentro se rechaza en vez de aceptarse en silencio y no
+/// hacer nada.
+#[derive(Debug, Clone, Copy, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NoConfig {}

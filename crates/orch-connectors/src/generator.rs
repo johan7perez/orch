@@ -11,18 +11,17 @@ use arrow::array::{ArrayRef, Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use orch_core::{parse_config, NodeContext, OrchError, Output, Registry, Result, Source};
+use orch_core::{NodeContext, OrchError, Output, Registry, Result, Source};
 use serde::Deserialize;
 
 pub fn register(registry: &mut Registry) {
     registry.register_source("generator", |node, config| {
-        let source: Arc<dyn Source> =
-            Arc::new(GeneratorSource::new(node, parse_config(node, config)?));
+        let source: Arc<dyn Source> = Arc::new(GeneratorSource::new(node, config));
         Ok(source)
     });
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratorConfig {
     /// Filas totales a producir.

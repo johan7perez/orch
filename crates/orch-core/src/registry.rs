@@ -21,6 +21,8 @@ pub struct Registry {
     sources: BTreeMap<String, SourceFactory>,
     transforms: BTreeMap<String, TransformFactory>,
     sinks: BTreeMap<String, SinkFactory>,
+    /// Esquema de config por componente, indexado por «tipo/nombre».
+    schemas: BTreeMap<String, Value>,
     pushdown: BTreeMap<String, crate::pushdown::PushdownHandler>,
 }
 
@@ -38,31 +40,58 @@ impl Registry {
     pub fn new() -> Self {
         Self::default()
     }
-
-    pub fn register_source<F>(&mut self, name: impl Into<String>, factory: F) -> &mut Self
+    /// Registra un origen.
+    ///
+    /// El tipo de config se infiere de la anotación del cierre, y de él salen
+    /// **las dos cosas**: el parseo y el esquema que enseña el inspector. No
+    /// hay forma de que se desincronicen porque no hay dos definiciones.
+    pub fn register_source<C, F>(&mut self, name: impl Into<String>, factory: F) -> &mut Self
     where
-        F: Fn(&str, &Value) -> Result<Arc<dyn Source>> + Send + Sync + 'static,
+        C: schemars::JsonSchema + serde::de::DeserializeOwned,
+        F: Fn(&str, C) -> Result<Arc<dyn Source>> + Send + Sync + 'static,
     {
-        self.sources.insert(name.into(), Box::new(factory));
+        let name = name.into();
+        self.schemas.insert(clave("source", &name), esquema::<C>());
+        self.sources.insert(
+            name,
+            Box::new(move |node, config| factory(node, crate::parse_config::<C>(node, config)?)),
+        );
         self
     }
 
-    pub fn register_transform<F>(&mut self, name: impl Into<String>, factory: F) -> &mut Self
+    pub fn register_transform<C, F>(&mut self, name: impl Into<String>, factory: F) -> &mut Self
     where
-        F: Fn(&str, &Value) -> Result<Arc<dyn Transform>> + Send + Sync + 'static,
+        C: schemars::JsonSchema + serde::de::DeserializeOwned,
+        F: Fn(&str, C) -> Result<Arc<dyn Transform>> + Send + Sync + 'static,
     {
-        self.transforms.insert(name.into(), Box::new(factory));
+        let name = name.into();
+        self.schemas
+            .insert(clave("transform", &name), esquema::<C>());
+        self.transforms.insert(
+            name,
+            Box::new(move |node, config| factory(node, crate::parse_config::<C>(node, config)?)),
+        );
         self
     }
 
-    pub fn register_sink<F>(&mut self, name: impl Into<String>, factory: F) -> &mut Self
+    pub fn register_sink<C, F>(&mut self, name: impl Into<String>, factory: F) -> &mut Self
     where
-        F: Fn(&str, &Value) -> Result<Arc<dyn Sink>> + Send + Sync + 'static,
+        C: schemars::JsonSchema + serde::de::DeserializeOwned,
+        F: Fn(&str, C) -> Result<Arc<dyn Sink>> + Send + Sync + 'static,
     {
-        self.sinks.insert(name.into(), Box::new(factory));
+        let name = name.into();
+        self.schemas.insert(clave("sink", &name), esquema::<C>());
+        self.sinks.insert(
+            name,
+            Box::new(move |node, config| factory(node, crate::parse_config::<C>(node, config)?)),
+        );
         self
     }
 
+    /// El esquema de config de un componente, para generar su formulario.
+    pub fn schema(&self, kind: &str, name: &str) -> Option<&Value> {
+        self.schemas.get(&clave(kind, name))
+    }
     /// Declara qué operaciones del nodo siguiente sabe absorber un origen.
     ///
     /// El manejador recibe la config del origen y la operación, y devuelve
@@ -140,6 +169,15 @@ impl Registry {
             .ok_or_else(|| unknown("sink", name, self.sink_names()))?;
         factory(node, config)
     }
+}
+
+fn clave(kind: &str, name: &str) -> String {
+    format!("{kind}/{name}")
+}
+
+/// El esquema JSON del tipo de config, ya como `Value` para cruzar a la UI.
+fn esquema<C: schemars::JsonSchema>() -> Value {
+    serde_json::to_value(schemars::schema_for!(C)).unwrap_or(Value::Null)
 }
 
 fn unknown(kind: &'static str, name: &str, available: Vec<&str>) -> OrchError {

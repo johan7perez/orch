@@ -36,7 +36,7 @@ pub mod spec;
 
 pub use connector::{NodeContext, Sink, Source, Transform};
 pub use dag::Dag;
-pub use error::{parse_config, OrchError, Result};
+pub use error::{parse_config, NoConfig, OrchError, Result};
 pub use event::RunEvent;
 pub use executor::{Executor, NodeReport, NodeStatus, RunReport};
 pub use io::{Input, InputPort, IoStats, NodeSignal, Output};

@@ -17,8 +17,7 @@ use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use orch_core::{
-    parse_config, Input, InputSchemas, NodeContext, OrchError, Output, PushdownOp, Registry,
-    Result, Sink, Source,
+    Input, InputSchemas, NodeContext, OrchError, Output, PushdownOp, Registry, Result, Sink, Source,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::{ArrowWriter, ProjectionMask};
@@ -32,12 +31,11 @@ use crate::util::yes;
 
 pub fn register(registry: &mut Registry) {
     registry.register_source("parquet", |node, config| {
-        let source: Arc<dyn Source> =
-            Arc::new(ParquetSource::new(node, parse_config(node, config)?));
+        let source: Arc<dyn Source> = Arc::new(ParquetSource::new(node, config));
         Ok(source)
     });
     registry.register_sink("parquet", |node, config| {
-        let sink: Arc<dyn Sink> = Arc::new(ParquetSink::new(node, parse_config(node, config)?));
+        let sink: Arc<dyn Sink> = Arc::new(ParquetSink::new(node, config));
         Ok(sink)
     });
 
@@ -63,7 +61,7 @@ pub fn register(registry: &mut Registry) {
 
 // --- origen -----------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParquetSourceConfig {
     pub path: PathBuf,
@@ -287,7 +285,7 @@ fn read_blocking(
 
 // --- destino ----------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ParquetSinkConfig {
     pub path: PathBuf,
