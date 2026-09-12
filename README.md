@@ -140,6 +140,29 @@ sistema sin interruptor propio, y movimiento sólo donde comunica algo —el
 latido de un nodo en curso, la entrada de un evento nuevo—, respetando
 `prefers-reduced-motion`.
 
+### El lienzo
+
+Cada pipeline se puede ver como el grafo que es, con el control segmentado
+**Ejecución / Diseño** de la barra. Los nodos se colocan solos en capas de
+izquierda a derecha, siguiendo el flujo de los datos; las barreras `after`
+van punteadas porque ordenan pero no transportan; y al elegir un nodo, el
+inspector enseña su configuración.
+
+Dos decisiones que conviene conocer:
+
+- **El lienzo dibuja el fichero, no el plan.** No se aplica pushdown: ver
+  cómo un `filter` desaparece porque el motor lo absorbió dentro del origen,
+  justo mientras lo estás editando, sería desconcertante.
+- **El grafo se dibuja aunque no valide.** Un diseñador que sólo abre
+  pipelines correctos falla justo cuando hace falta, que es para arreglar el
+  que está roto. El motivo del fallo se enseña encima, y el conector que no
+  existe se marca en el nodo.
+
+El inspector carga el pipeline **sin expandir los secretos**: lo que se ve es
+`${env:PG_DSN}` y no su valor. Por eso un pipeline cuyo secreto no está
+definido en esta máquina se puede abrir y editar igual, aunque no se pueda
+ejecutar.
+
 ## Formato de pipeline
 
 ```yaml

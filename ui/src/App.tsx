@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 import { api, type RunDetail } from "./api";
 import { DetalleEjecucion } from "./vistas/DetalleEjecucion";
-import { EnVivo } from "./vistas/EnVivo";
+import { Pipeline } from "./vistas/Pipeline";
 import { Lateral } from "./vistas/Lateral";
 import { useMotor } from "./useMotor";
 
@@ -78,7 +78,7 @@ export function App() {
 
       <main className="principal">
         {pestana === "pipelines" ? (
-          <EnVivo
+          <Pipeline
             pipeline={pipeline}
             enCurso={motor.enCurso}
             error={motor.error}

@@ -24,6 +24,38 @@ export interface Workspace {
   problem: string | null;
 }
 
+export interface GraphNode {
+  id: string;
+  /** `source`, `transform` o `sink`. */
+  kind: string;
+  /** Conector u operación: `csv`, `sql`, `postgres`… */
+  component: string;
+  /**
+   * La config tal y como está escrita en el fichero. Los `${env:...}` llegan
+   * sin expandir a propósito: un secreto resuelto no debe aparecer nunca en
+   * pantalla.
+   */
+  config: Record<string, unknown>;
+  after: string[];
+  /** `false` si el conector no existe en el registro. */
+  known: boolean;
+}
+
+export interface GraphEdge {
+  from: string;
+  to: string;
+  port: string;
+}
+
+export interface Graph {
+  name: string;
+  description: string | null;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  /** Por qué no valida, si no valida. El grafo se dibuja igual. */
+  problem: string | null;
+}
+
 export interface RunSummary {
   run_id: string;
   pipeline: string;
@@ -114,6 +146,7 @@ export const api = {
   recentRuns: (limit = 50) => invoke<RunSummary[]>("recent_runs", { limit }),
   runDetail: (runId: string) => invoke<RunDetail>("run_detail", { runId }),
   startRun: (path: string) => invoke<void>("start_run", { path }),
+  pipelineGraph: (path: string) => invoke<Graph>("pipeline_graph", { path }),
 };
 
 /** Se engancha al flujo de eventos del motor. */

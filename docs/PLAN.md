@@ -250,17 +250,64 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
 - ⬜ Iconos de la aplicación provisionales, generados a mano.
 - ⬜ Probado sólo en Windows; falta pasar por macOS y Linux.
 
-## Fase 2 — Diseñador visual + SDK de conectores ⬜
+## Fase 2 — Diseñador visual + SDK de conectores 🚧
 
-- ⬜ Canvas drag-and-drop (React Flow / Svelte Flow) que produce y consume el
-  mismo YAML de la Fase 0.
-- ⬜ Virtualización del canvas (sólo nodos visibles) para pipelines grandes.
-- ⬜ Inspector contextual por nodo, generado a partir del esquema de config
-  del conector.
-- ⬜ Arquitectura de plugins WASM y SDK de conectores.
-- ⬜ **Medir el overhead de WASM frente a los conectores nativos** antes de
+### 2.1 Lienzo del pipeline (lectura) ✅
+
+- ✅ Comando `pipeline_graph`: nodos, aristas y puertos del pipeline, más el
+  motivo si no valida. **Devuelve el grafo aunque el DAG no compile** — un
+  diseñador que sólo funciona con pipelines correctos no sirve justo cuando
+  hace falta, que es para arreglar el que está roto.
+- ✅ `PipelineSpec::from_path_as_written`: carga sin expandir secretos ni
+  resolver rutas. La diferencia no es cosmética: cargando como para ejecutar,
+  el inspector enseñaría la contraseña de la base de datos en pantalla y
+  acabaría en la primera captura que alguien pegue en un chat. Lo que se ve
+  es `${env:PG_DSN}`, que es lo que el fichero dice.
+- ✅ Lienzo con React Flow y disposición automática por capas: la capa de un
+  nodo es el camino **más largo** desde un origen, para que ninguno quede a
+  la izquierda de algo que lo alimenta. Aguanta ciclos —el lienzo también
+  sirve para arreglarlos— colocando al final lo que quedó sin ordenar.
+- ✅ El lienzo enseña el fichero, no el plan reescrito: no se aplica pushdown.
+  Ver un nodo desaparecer porque el motor lo absorbió, justo mientras lo
+  editas, sería desconcertante.
+- ✅ Las barreras `after` se dibujan punteadas: ordenan, no transportan.
+- ✅ Inspector del nodo elegido con su config tal y como está escrita, y
+  aviso si el conector no está registrado (`Registry::has`), en vez de
+  dibujarlo como bueno y fallar sólo al ejecutar.
+- ✅ Control segmentado Ejecución/Diseño en la barra, no una pestaña más en
+  el lateral: el lateral es *qué* estás navegando y esto son dos vistas del
+  *mismo* pipeline. La barra y el botón de ejecutar son comunes a las dos.
+
+### 2.2 Esquemas de config e inspector generado ⬜
+
+- ⬜ Esquema JSON por conector y transformación, derivado del propio struct
+  de config, para no mantener dos definiciones.
+- ⬜ Inspector como formulario generado a partir del esquema, con los tipos y
+  los valores por defecto reales.
+- ⬜ El catálogo pasa a llevar el esquema, no sólo el nombre.
+
+### 2.3 Edición y escritura del YAML ⬜
+
+- ⬜ Drag-and-drop: crear nodos desde el catálogo, conectar y desconectar.
+- ⬜ **Escritura que preserve comentarios y formato.** Serializar el spec
+  entero destruiría los comentarios del fichero, y un pipeline es código que
+  la gente edita a mano. Hay que editar el texto quirúrgicamente y tocar sólo
+  lo que cambió.
+- ⬜ Posiciones de los nodos: hoy se calculan; si se guardan, tienen que ir
+  donde no estorben a quien edita el YAML a mano.
+
+### 2.4 Virtualización del lienzo ⬜
+
+- ⬜ Renderizar sólo los nodos visibles, para que cientos de nodos no
+  degraden el lienzo.
+- ⬜ Medirlo con un pipeline generado de varios cientos de nodos antes y
+  después.
+
+### 2.5 Plugins WASM y SDK de conectores ⬜
+
+- ⬜ Arquitectura de plugins WASM y SDK.
+- ⬜ **Medir el overhead frente a los conectores nativos** antes de
   comprometerse; si es alto, reservarlo para conectores de baja frecuencia.
-- ⬜ Implementación completa de los patrones Apple/HIG.
 
 ## Fase 3 — Monitoreo avanzado ⬜
 

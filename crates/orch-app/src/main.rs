@@ -41,6 +41,7 @@ fn main() {
             commands::run_detail,
             commands::start_run,
             commands::catalog,
+            commands::pipeline_graph,
         ])
         .run(tauri::generate_context!())
         .expect("no se pudo arrancar la ventana");

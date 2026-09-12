@@ -216,3 +216,91 @@ pub async fn catalog(state: State<'_, AppState>) -> Response<Catalog> {
         sinks: owned(state.registry.sink_names()),
     })
 }
+
+/// Un nodo tal y como se dibuja en el lienzo.
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphNode {
+    pub id: String,
+    /// `source`, `transform` o `sink`.
+    pub kind: String,
+    /// Conector u operación: `csv`, `sql`, `postgres`…
+    pub component: String,
+    /// La config **tal y como está escrita**, con los `${env:...}` sin
+    /// expandir. Ver `PipelineSpec::from_path_as_written`.
+    pub config: serde_json::Value,
+    pub after: Vec<String>,
+    /// `false` si el componente no está registrado. El lienzo lo marca en vez
+    /// de dibujarlo como si fuera válido.
+    pub known: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphEdge {
+    pub from: String,
+    pub to: String,
+    /// Nombre efectivo del puerto (por defecto, el id del nodo de origen).
+    pub port: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Graph {
+    pub name: String,
+    pub description: Option<String>,
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+    /// Por qué no valida, si no valida. El grafo se devuelve igual: se dibuja
+    /// para poder arreglarlo.
+    pub problem: Option<String>,
+}
+
+/// El grafo de un pipeline, para dibujarlo.
+///
+/// No aplica pushdown: el lienzo enseña lo que hay escrito en el fichero, no
+/// el plan reescrito. Ver un nodo desaparecer porque el motor lo absorbió
+/// sería desconcertante justo cuando lo estás editando.
+#[tauri::command]
+pub async fn pipeline_graph(state: State<'_, AppState>, path: String) -> Response<Graph> {
+    let path = PathBuf::from(path);
+    let spec = PipelineSpec::from_path_as_written(&path).map_err(fail)?;
+
+    let nodes = spec
+        .nodes
+        .iter()
+        .map(|node| GraphNode {
+            id: node.id.clone(),
+            kind: node.kind.label().to_string(),
+            component: node.kind.component().to_string(),
+            config: node.kind.config().clone(),
+            after: node.after.clone(),
+            known: state.registry.has(&node.kind),
+        })
+        .collect();
+
+    let edges = spec
+        .edges
+        .iter()
+        .map(|edge| GraphEdge {
+            from: edge.from.clone(),
+            to: edge.to.clone(),
+            port: edge.port_name().to_string(),
+        })
+        .collect();
+
+    // La validación se hace sobre una carga de verdad: con los secretos
+    // expandidos. Si falla, es un dato más del grafo, no un error.
+    let problem = match PipelineSpec::from_path(&path) {
+        Ok(mut real) => {
+            orch_core::pushdown::apply(&mut real, &state.registry);
+            Dag::build(real).err().map(|err| err.to_string())
+        }
+        Err(err) => Some(err.to_string()),
+    };
+
+    Ok(Graph {
+        name: spec.name,
+        description: spec.description,
+        nodes,
+        edges,
+        problem,
+    })
+}

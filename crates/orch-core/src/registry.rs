@@ -99,6 +99,19 @@ impl Registry {
         self.sinks.keys().map(String::as_str).collect()
     }
 
+    /// ¿Está registrado el componente que pide este nodo?
+    ///
+    /// El diseñador lo usa para marcar un nodo cuyo conector no existe en vez
+    /// de dibujarlo como si fuera bueno y fallar sólo al ejecutar.
+    pub fn has(&self, kind: &crate::spec::NodeKind) -> bool {
+        use crate::spec::NodeKind;
+        match kind {
+            NodeKind::Source { connector, .. } => self.sources.contains_key(connector),
+            NodeKind::Transform { op, .. } => self.transforms.contains_key(op),
+            NodeKind::Sink { connector, .. } => self.sinks.contains_key(connector),
+        }
+    }
+
     pub fn build_source(&self, name: &str, node: &str, config: &Value) -> Result<Arc<dyn Source>> {
         let factory = self
             .sources

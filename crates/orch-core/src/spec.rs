@@ -78,16 +78,20 @@ fn default_version() -> u32 {
 }
 
 impl PipelineSpec {
-    pub fn from_yaml_str(path: &str, yaml: &str) -> crate::Result<Self> {
+    /// Parsea el YAML **sin tocar nada más**: ni secretos ni rutas.
+    fn parse(path: &str, yaml: &str) -> crate::Result<Self> {
         // Los editores de Windows guardan UTF-8 con BOM y serde_yaml lo trata
         // como parte del primer nombre de campo, con un error incomprensible.
         let yaml = yaml.strip_prefix('\u{feff}').unwrap_or(yaml);
 
-        let mut spec: Self =
-            serde_yaml::from_str(yaml).map_err(|source| crate::OrchError::SpecParse {
-                path: path.to_string(),
-                source,
-            })?;
+        serde_yaml::from_str(yaml).map_err(|source| crate::OrchError::SpecParse {
+            path: path.to_string(),
+            source,
+        })
+    }
+
+    pub fn from_yaml_str(path: &str, yaml: &str) -> crate::Result<Self> {
+        let mut spec = Self::parse(path, yaml)?;
         spec.expand_secrets()?;
         Ok(spec)
     }
@@ -134,16 +138,37 @@ impl PipelineSpec {
         }
     }
 
+    /// Carga un pipeline **listo para ejecutar**: con los secretos resueltos y
+    /// las rutas ya absolutas.
     pub fn from_path(path: impl AsRef<std::path::Path>) -> crate::Result<Self> {
         let path = path.as_ref();
         let display = path.display().to_string();
-        let raw = std::fs::read_to_string(path).map_err(|source| crate::OrchError::SpecIo {
-            path: display.clone(),
-            source,
-        })?;
-        let mut spec = Self::from_yaml_str(&display, &raw)?;
+        let mut spec = Self::from_yaml_str(&display, &Self::read(path)?)?;
         spec.resolve_paths(path.parent().unwrap_or_else(|| std::path::Path::new(".")));
         Ok(spec)
+    }
+
+    /// Carga un pipeline **tal y como está escrito**: sin expandir secretos ni
+    /// resolver rutas.
+    ///
+    /// Es lo que necesita el diseñador, y la diferencia no es cosmética. Si
+    /// cargara como para ejecutar, el inspector enseñaría la contraseña de la
+    /// base de datos en pantalla —y acabaría en la primera captura que
+    /// alguien pegue en un chat—. Lo que se ve aquí es `${env:PG_DSN}`, que
+    /// es exactamente lo que dice el fichero.
+    ///
+    /// Por lo mismo no sirve para ejecutar: un `${env:...}` sin expandir no
+    /// es un DSN.
+    pub fn from_path_as_written(path: impl AsRef<std::path::Path>) -> crate::Result<Self> {
+        let path = path.as_ref();
+        Self::parse(&path.display().to_string(), &Self::read(path)?)
+    }
+
+    fn read(path: &std::path::Path) -> crate::Result<String> {
+        std::fs::read_to_string(path).map_err(|source| crate::OrchError::SpecIo {
+            path: path.display().to_string(),
+            source,
+        })
     }
 }
 

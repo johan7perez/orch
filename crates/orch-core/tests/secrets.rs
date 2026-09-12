@@ -169,3 +169,35 @@ edges:
     assert!(matches!(destino.kind, NodeKind::Sink { .. }));
     assert_eq!(destino.kind.config()["path"], "/datos/x.csv");
 }
+
+/// El diseñador carga con `from_path_as_written`, y esto es lo que separa
+/// enseñar `${env:...}` de enseñar la contraseña en pantalla.
+#[test]
+fn el_disenador_no_expande_secretos_y_por_eso_abre_lo_que_no_se_puede_ejecutar() {
+    // Una variable que no existe a propósito: es el caso real de un
+    // `postgres.yaml` en una máquina sin el DSN configurado.
+    let yaml = r#"
+name: sin-el-secreto
+nodes:
+  - { id: origen, type: source, connector: postgres, config: { dsn: "${env:ORCH_TEST_QUE_NO_EXISTE}" } }
+  - { id: destino, type: sink, connector: "null" }
+edges:
+  - { from: origen, to: destino }
+"#;
+    let carpeta = std::env::temp_dir().join(format!("orch-disenador-{}", std::process::id()));
+    std::fs::create_dir_all(&carpeta).expect("crear carpeta");
+    let ruta = carpeta.join("p.yaml");
+    std::fs::write(&ruta, yaml).expect("escribir pipeline");
+
+    // Para ejecutar no sirve, y debe decirlo.
+    assert!(PipelineSpec::from_path(&ruta).is_err());
+
+    // Para dibujarlo sí, y lo que se ve es lo que el fichero dice.
+    let spec = PipelineSpec::from_path_as_written(&ruta).expect("debería abrirse igual");
+    assert_eq!(
+        config_of(&spec, "origen")["dsn"],
+        "${env:ORCH_TEST_QUE_NO_EXISTE}"
+    );
+
+    std::fs::remove_dir_all(&carpeta).ok();
+}
