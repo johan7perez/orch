@@ -345,12 +345,51 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
   inspector que se abre lo tapa, el lienzo se desplaza lo justo para que
   asome.
 
-### 2.4 Virtualización del lienzo ⬜
+### 2.4 Virtualización del lienzo ✅
 
-- ⬜ Renderizar sólo los nodos visibles, para que cientos de nodos no
-  degraden el lienzo.
-- ⬜ Medirlo con un pipeline generado de varios cientos de nodos antes y
-  después.
+- ✅ Pipeline generado de 500 nodos y 450 aristas
+  (`cargo run -p orch-edit --example grande`), que además cronometra cada
+  operación del editor sobre él.
+- ✅ Medidor en la propia ventana (`VITE_ORCH_MEDIR=1`): nodos y aristas en el
+  DOM, tiempo de construir el grafo y de cada render de React, y fotogramas de
+  los dos últimos segundos. Las interacciones se repitieron idénticas antes y
+  después (desplazar, zoom con la rueda, elegir un nodo).
+- ✅ **Lo primero que dijo la medición: la virtualización sola no basta.**
+  Con el grafo entero a la vista, quitar sombras, texto, aristas y fondo no
+  cambiaba nada: en WebKitGTK cada nodo visible es un elemento que se
+  repinta en cada fotograma, y con unos 300 a la vista eso son 30 ms
+  aunque sean cajas vacías. Lo que funciona es tener menos nodos a la vista.
+- ✅ Sólo se montan los nodos y aristas visibles (`onlyRenderVisibleElements`).
+- ✅ Un pipeline que no cabe entero a un tamaño legible (zoom 0,6) se abre por
+  el principio, no en una vista general que ni se lee ni va fluida.
+- ✅ Elegir un nodo cambia dos objetos, no quinientos; y después de editar,
+  React Flow sólo vuelve a procesar los nodos y aristas que cambiaron.
+- ✅ Disposición automática y montaje del grafo lineales en nodos y aristas.
+- ✅ Dos fallos que salieron al medir: un nodo recién soltado se ocultaba con
+  sus aristas (llegaba a React Flow sin medidas; ahora el tamaño, que es
+  fijo, va declarado), y arrastrar con Espacio pulsado dejaba un nodo
+  desplazado en pantalla sin guardar nada (desactivado).
+
+Con 500 nodos, en esta máquina (Linux Mint, WebKitGTK, React en modo
+desarrollo; en release y con WebView2 por GPU debería ir mejor, no está
+medido):
+
+| | Antes | Después |
+|---|---|---|
+| Al abrir | vista general, 500 nodos en el DOM | legible por los orígenes, ~70 |
+| Desplazar la vista con que se abre | p95 146 ms, 15 de 36 fotogramas lentos | p95 ~40 ms |
+| Desplazar con zoom de trabajo | p95 50 ms, 19 de 74 lentos | p95 28 ms, 3 de 107 |
+| Zoom con la rueda | máx 150 ms | máx ~100 ms |
+| Elegir un nodo | fotograma de 380 ms | 126 ms |
+| Construir el grafo | 5 ms | 2 ms |
+| Vista general pedida a mano | p95 146 ms | igual: es el límite del DOM |
+
+El editor no era el cuello de botella: sobre el mismo pipeline cada cambio
+tarda 17–64 ms en release (150–540 ms en debug).
+
+- ⬜ Si la vista general tiene que ir fluida con cientos de nodos, el paso
+  siguiente es pintarla en un `<canvas>` por debajo de cierto zoom en vez de
+  con elementos del DOM.
 
 ### 2.5 Plugins WASM y SDK de conectores ⬜
 

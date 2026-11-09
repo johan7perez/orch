@@ -9,8 +9,8 @@ ejecución en streaming, transformaciones SQL sobre DataFusion, conectores
 CSV/Parquet/PostgreSQL/REST, historial en DuckDB y demonio con disparadores
 cron, más la aplicación de escritorio (Tauri) con el lienzo del pipeline, que
 ya edita: añadir, conectar, configurar, colocar y quitar nodos escribe el YAML
-tocando sólo lo que cambia. Lo siguiente es virtualizar el lienzo para
-pipelines de cientos de nodos (Fase 2.4).
+tocando sólo lo que cambia, y aguanta pipelines de cientos de nodos. Lo
+siguiente son los plugins WASM y el SDK de conectores (Fase 2.5).
 
 ---
 
@@ -82,6 +82,16 @@ cargo fmt --all
 Los tests de PostgreSQL y el del llavero **se saltan solos** si no hay
 servidor (`ORCH_TEST_PG_DSN`) o almacén de credenciales, y entonces cuentan
 como aprobados. El aviso sólo se ve con `-- --nocapture`.
+
+Para medir el lienzo con un pipeline grande:
+
+```sh
+# Genera uno de 500 nodos y mide cada operación del editor sobre él.
+cargo run --release -p orch-edit --example grande -- 500 /tmp/grande/grande.yaml
+
+# La app con el medidor: nodos en el DOM, tiempos de render y de fotograma.
+VITE_ORCH_MEDIR=1 ORCH_PIPELINES=/tmp/grande npx --prefix ui tauri dev
+```
 
 ## Uso
 
@@ -204,7 +214,7 @@ izquierda a derecha, siguiendo el flujo de los datos; las barreras `after`
 van punteadas porque ordenan pero no transportan; y al elegir un nodo, el
 inspector enseña su configuración.
 
-Dos decisiones que conviene conocer:
+Tres decisiones que conviene conocer:
 
 - **El lienzo dibuja el fichero, no el plan.** No se aplica pushdown: ver
   cómo un `filter` desaparece porque el motor lo absorbió dentro del origen,
@@ -213,6 +223,12 @@ Dos decisiones que conviene conocer:
   pipelines correctos falla justo cuando hace falta, que es para arreglar el
   que está roto. El motivo del fallo se enseña encima, y el conector que no
   existe se marca en el nodo.
+- **Un pipeline grande se abre a un tamaño legible, por el principio.** Si
+  no cabe entero con el texto de los nodos legible, se abre arriba a la
+  izquierda, donde están los orígenes, en vez de en una vista general
+  ilegible. Esa vista general sigue en el botón de encuadre, pero es la más
+  cara de pintar: cada nodo a la vista es un elemento que se repinta en cada
+  fotograma.
 
 El inspector carga el pipeline **sin expandir los secretos**: lo que se ve es
 `${env:PG_DSN}` y no su valor. Por eso un pipeline cuyo secreto no está

@@ -1155,3 +1155,20 @@ select.control {
   stroke: var(--acento);
   stroke-width: 2;
 }
+
+/* Medidor de rendimiento (sólo con VITE_ORCH_MEDIR=1). */
+.medidor {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 10;
+  margin: 0;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #e8e8ea;
+  font-family: var(--fuente-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+}

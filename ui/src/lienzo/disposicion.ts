@@ -43,10 +43,13 @@ export function aristasDe(grafo: Graph): Arista[] {
 }
 
 export function disponer(grafo: Graph): Map<string, Colocado> {
+  // Lineal en nodos y aristas: con cientos de nodos, cualquier `includes` o
+  // copia dentro de un bucle se nota al abrir y después de cada cambio.
   const ids = grafo.nodes.map((n) => n.id);
+  const existen = new Set(ids);
   const aristas = aristasDe(grafo).filter(
     // Una arista a un nodo que no existe no debe descolocar a los que sí.
-    (a) => ids.includes(a.from) && ids.includes(a.to),
+    (a) => existen.has(a.from) && existen.has(a.to),
   );
 
   const entrantes = new Map<string, number>(ids.map((id) => [id, 0]));
@@ -62,8 +65,9 @@ export function disponer(grafo: Graph): Map<string, Colocado> {
   const cola = ids.filter((id) => pendientes.get(id) === 0);
   const ordenados = new Set<string>();
 
-  while (cola.length > 0) {
-    const id = cola.shift()!;
+  // Un índice en vez de `shift()`, que mueve el array entero cada vez.
+  for (let cabeza = 0; cabeza < cola.length; cabeza++) {
+    const id = cola[cabeza]!;
     ordenados.add(id);
     for (const siguiente of salientes.get(id) ?? []) {
       capa.set(siguiente, Math.max(capa.get(siguiente) ?? 0, (capa.get(id) ?? 0) + 1));
@@ -85,7 +89,9 @@ export function disponer(grafo: Graph): Map<string, Colocado> {
   const columnas = new Map<number, string[]>();
   for (const id of ids) {
     const n = capa.get(id) ?? 0;
-    columnas.set(n, [...(columnas.get(n) ?? []), id]);
+    const columna = columnas.get(n);
+    if (columna) columna.push(id);
+    else columnas.set(n, [id]);
   }
 
   const altoMaximo = Math.max(
