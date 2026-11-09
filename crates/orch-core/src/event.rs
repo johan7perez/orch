@@ -1,8 +1,8 @@
 //! Eventos de ejecución en tiempo real.
 //!
-//! El ejecutor los publica en un canal `broadcast`. Hoy los consume la CLI;
-//! en la Fase 1 los consumirá el puente de Tauri hacia el frontend y el
-//! escritor de DuckDB, sin que el ejecutor tenga que cambiar.
+//! El ejecutor los publica en un canal `broadcast`, y los consumen el visor
+//! de la CLI, el escritor de DuckDB y el puente de Tauri hacia la ventana,
+//! cada uno por su cuenta.
 
 use serde::Serialize;
 
@@ -53,6 +53,27 @@ pub enum RunEvent {
         succeeded: bool,
         elapsed_ms: u64,
     },
+    /// Cómo va cada nodo. Se publica cada [`PROGRESS_EVERY`] mientras la
+    /// ejecución sigue viva y algo se ha movido.
+    ///
+    /// Los contadores son acumulados desde el arranque: las filas por segundo
+    /// salen de dos seguidos, y perder uno (un oyente que se retrasa) no
+    /// desajusta nada.
+    ///
+    /// [`PROGRESS_EVERY`]: crate::executor::PROGRESS_EVERY
+    Progress {
+        run_id: String,
+        elapsed_ms: u64,
+        nodes: Vec<NodeProgress>,
+    },
+}
+
+/// Lo que lleva movido un nodo hasta ahora.
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeProgress {
+    pub node: String,
+    pub input: IoStats,
+    pub output: IoStats,
 }
 
 impl RunEvent {
@@ -63,7 +84,8 @@ impl RunEvent {
             | RunEvent::NodeFinished { run_id, .. }
             | RunEvent::NodeFailed { run_id, .. }
             | RunEvent::NodeSkipped { run_id, .. }
-            | RunEvent::RunFinished { run_id, .. } => run_id,
+            | RunEvent::RunFinished { run_id, .. }
+            | RunEvent::Progress { run_id, .. } => run_id,
         }
     }
 }

@@ -15,5 +15,5 @@ mod schema;
 mod store;
 mod writer;
 
-pub use store::{EventRow, NodeRow, RunSummary, Store};
+pub use store::{AlertRow, EventRow, NodeRow, ProgressRow, RunSummary, Store};
 pub use writer::EventWriter;

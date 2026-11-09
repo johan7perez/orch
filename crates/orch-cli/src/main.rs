@@ -298,6 +298,22 @@ async fn dispatch(
             let recorder = store
                 .as_ref()
                 .map(|store| orch_store::EventWriter::spawn(store.clone(), executor.subscribe()));
+            // Las alertas son otro oyente: avisan aquí, en la terminal, y van
+            // al historial y al webhook si el pipeline lo pide.
+            let vigilancia = orch_alert::Vigilancia::para(dag.spec(), store.as_deref());
+            let entrega =
+                orch_alert::Entrega::nueva(store.clone(), vigilancia.config.webhook.clone());
+            let alertas = orch_alert::vigilar(
+                vigilancia,
+                executor.subscribe(),
+                entrega,
+                |alerta, problemas| {
+                    eprintln!("⚠ {}", alerta.mensaje);
+                    for problema in problemas {
+                        eprintln!("  aviso: {problema}");
+                    }
+                },
+            );
 
             let started_at = chrono::Utc::now();
             let result = executor.run(&dag).await;
@@ -313,6 +329,7 @@ async fn dispatch(
             if let Some(handle) = recorder {
                 handle.await.ok();
             }
+            alertas.await.ok();
 
             let report = result?;
             if let Some(store) = &store {

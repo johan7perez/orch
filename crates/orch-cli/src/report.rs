@@ -311,7 +311,7 @@ fn translate_status(status: &str) -> &str {
     }
 }
 
-fn human_ms(ms: u64) -> String {
+pub(crate) fn human_ms(ms: u64) -> String {
     if ms < 1_000 {
         format!("{ms} ms")
     } else if ms < 60_000 {
@@ -330,7 +330,7 @@ fn rate(rows: u64, ms: u64) -> String {
 
 /// Separa millares con espacio fino para que las cifras grandes se lean de un
 /// vistazo sin depender de la localización del sistema.
-fn thousands(value: u64) -> String {
+pub(crate) fn thousands(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, ch) in digits.chars().enumerate() {

@@ -37,15 +37,15 @@ pub mod spec;
 pub use connector::{NodeContext, Sink, Source, Transform};
 pub use dag::Dag;
 pub use error::{parse_config, NoConfig, OrchError, Result};
-pub use event::RunEvent;
-pub use executor::{Executor, NodeReport, NodeStatus, RunReport};
-pub use io::{Input, InputPort, IoStats, NodeSignal, Output};
+pub use event::{NodeProgress, RunEvent};
+pub use executor::{Executor, NodeReport, NodeStatus, RunReport, PROGRESS_EVERY};
+pub use io::{Input, InputPort, IoStats, NodeSignal, Output, Probe};
 pub use pushdown::{PushdownOp, Pushed};
 pub use registry::Registry;
 pub use schema::{InputSchemas, PortSchema};
 pub use spec::{
-    Concurrency, EdgeSpec, NodeId, NodeKind, NodeSpec, PipelineSpec, RetryPolicy, RunSettings,
-    ScheduleSpec, SPEC_VERSION,
+    AlertsSpec, Concurrency, EdgeSpec, NodeId, NodeKind, NodeSpec, PipelineSpec, Plazo,
+    RetryPolicy, RunSettings, ScheduleSpec, SPEC_VERSION,
 };
 
 /// Re-exportado para que los conectores no tengan que fijar su propia versión

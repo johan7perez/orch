@@ -7,11 +7,15 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import type { Muestra } from "./Curva";
+
 import {
   api,
+  onAlert,
   onFailed,
   onFinished,
   onRunEvent,
+  type Alerta,
   type EventRow,
   type RunEvent,
   type RunSummary,
@@ -25,9 +29,28 @@ export interface EnCurso {
   eventos: EventRow[];
   /** Estado por nodo, tal y como va llegando. */
   nodos: Map<string, string>;
+  /** Tipo de cada nodo: de un destino cuentan las filas que recibe. */
+  tipos: Map<string, string>;
+  /** Lo que lleva movido cada nodo, muestra a muestra; los últimos 60 s. */
+  muestras: Map<string, Muestra[]>;
+  /** Filas y tiempo de cada nodo al terminar: con eso sale su ritmo medio. */
+  finales: Map<string, { filas: number; ms: number }>;
+  /** Milisegundos desde el arranque, según la última muestra. */
+  transcurrido: number;
+  /**
+   * Los nodos en el orden del pipeline. Los `node_started` llegan en el
+   * orden en que arrancan las tareas, que no dice nada; el progreso los trae
+   * en el del fichero.
+   */
+  orden: string[];
+  /** Lo que se avisó durante la ejecución. */
+  alertas: Alerta[];
   terminada: boolean;
   correcta: boolean | null;
 }
+
+/** Cuatro muestras por segundo durante un minuto: lo que dibuja la curva. */
+const MUESTRAS_MAXIMAS = 240;
 
 export function useMotor() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -69,6 +92,13 @@ export function useMotor() {
       }),
       onFinished(() => {
         void refrescarRuns();
+      }),
+      onAlert((alerta) => {
+        setEnCurso((anterior) =>
+          anterior && anterior.runId === alerta.run_id
+            ? { ...anterior, alertas: [...anterior.alertas, alerta] }
+            : anterior,
+        );
       }),
       onFailed((mensaje) => {
         setError(mensaje);
@@ -130,11 +160,40 @@ function aplicar(
           pipeline: "pipeline" in evento ? evento.pipeline : "",
           eventos: [],
           nodos: new Map(),
+          tipos: new Map(),
+          muestras: new Map(),
+          finales: new Map(),
+          transcurrido: 0,
+          orden: [],
+          alertas: [],
           terminada: false,
           correcta: null,
         };
 
+  // El progreso no es un evento que leer sino una curva que dibujar: no
+  // entra en el registro, que se llenaría con cuatro líneas por segundo.
+  if (evento.event === "progress") {
+    const muestras = new Map(base.muestras);
+    for (const nodo of evento.nodes) {
+      const filas =
+        base.tipos.get(nodo.node) === "sink" ? nodo.input.rows : nodo.output.rows;
+      const previas = muestras.get(nodo.node) ?? [];
+      muestras.set(
+        nodo.node,
+        [...previas, { t: evento.elapsed_ms, filas }].slice(-MUESTRAS_MAXIMAS),
+      );
+    }
+    return {
+      ...base,
+      muestras,
+      transcurrido: evento.elapsed_ms,
+      orden: base.orden.length > 0 ? base.orden : evento.nodes.map((n) => n.node),
+    };
+  }
+
   const nodos = new Map(base.nodos);
+  const tipos = new Map(base.tipos);
+  const finales = new Map(base.finales);
   let terminada = base.terminada;
   let correcta = base.correcta;
   let pipeline = base.pipeline;
@@ -147,12 +206,17 @@ function aplicar(
       break;
     case "node_started":
       nodos.set(evento.node, "running");
+      tipos.set(evento.node, evento.kind);
       detalle = `${evento.kind}:${evento.component}${
         evento.attempt > 1 ? ` · intento ${evento.attempt}` : ""
       }`;
       break;
     case "node_finished":
       nodos.set(evento.node, "succeeded");
+      finales.set(evento.node, {
+        filas: tipos.get(evento.node) === "sink" ? evento.input.rows : evento.output.rows,
+        ms: evento.elapsed_ms,
+      });
       detalle = `${evento.output.rows} filas en ${evento.elapsed_ms} ms`;
       break;
     case "node_failed":
@@ -183,6 +247,8 @@ function aplicar(
     ...base,
     pipeline,
     nodos,
+    tipos,
+    finales,
     terminada,
     correcta,
     eventos: [...base.eventos, fila],

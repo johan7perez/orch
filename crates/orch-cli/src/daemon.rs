@@ -147,6 +147,14 @@ pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> 
     Ok(())
 }
 
+/// Cómo enseña el demonio una alerta: con hora, como el resto de su salida.
+fn imprimir_alerta(alerta: &orch_alert::Alerta, problemas: &[String]) {
+    eprintln!("{}  ⚠ {}", Utc::now().format("%H:%M:%S"), alerta.mensaje);
+    for problema in problemas {
+        eprintln!("          aviso: {problema}");
+    }
+}
+
 fn spawn(
     running: &mut tokio::task::JoinSet<(String, bool)>,
     registry: &Arc<Registry>,
@@ -187,6 +195,14 @@ fn spawn(
                     Utc::now().format("%H:%M:%S"),
                     launch.name
                 );
+                orch_alert::avisar_arranque_fallido(
+                    &path,
+                    &launch.name,
+                    &err.to_string(),
+                    Some(Arc::clone(&store)),
+                    imprimir_alerta,
+                )
+                .await;
                 false
             }
         };
@@ -198,11 +214,16 @@ async fn execute(registry: &Arc<Registry>, store: &Arc<Store>, path: &Path) -> R
     let (dag, _) = crate::load(path, registry)?;
     let executor = Executor::new(Arc::clone(registry));
     let recorder = EventWriter::spawn(Arc::clone(store), executor.subscribe());
+    let vigilancia = orch_alert::Vigilancia::para(dag.spec(), Some(store));
+    let entrega =
+        orch_alert::Entrega::nueva(Some(Arc::clone(store)), vigilancia.config.webhook.clone());
+    let alertas = orch_alert::vigilar(vigilancia, executor.subscribe(), entrega, imprimir_alerta);
 
     let started_at = Utc::now();
     let result = executor.run(&dag).await;
     drop(executor);
     recorder.await.ok();
+    alertas.await.ok();
 
     let report = result?;
     if let Err(err) = store.record_run(&report, started_at) {

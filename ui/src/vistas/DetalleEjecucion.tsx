@@ -1,6 +1,8 @@
 import type { NodeRow, RunDetail, RunSummary } from "../api";
+import { Curva, ritmo } from "../Curva";
 import { claseDePunto, estadoLegible, fechaHora, hora, miles, milisegundos } from "../formato";
 import { Isotipo } from "../Marca";
+import { claseAlerta } from "./EnVivo";
 
 interface Props {
   detalle: RunDetail | null;
@@ -26,6 +28,12 @@ export function DetalleEjecucion({ detalle, resumen }: Props) {
     null,
   );
 
+  // Todas las curvas comparten el eje de tiempo: la ejecución entera.
+  const duracion = Math.max(
+    resumen?.elapsed_ms ?? 0,
+    ...detalle.progress.map((m) => m.at_ms),
+  );
+
   return (
     <>
       <header className="barra">
@@ -48,6 +56,13 @@ export function DetalleEjecucion({ detalle, resumen }: Props) {
       </header>
 
       <div className="contenido">
+        {detalle.alerts.map((alerta, i) => (
+          <p className={claseAlerta(alerta.kind)} key={i}>
+            {alerta.message}
+            <span className="tenue"> · {hora(alerta.at)}</span>
+          </p>
+        ))}
+
         <p className="seccion">Nodos</p>
         <table className="tabla">
           <thead>
@@ -56,6 +71,7 @@ export function DetalleEjecucion({ detalle, resumen }: Props) {
               <th>Estado</th>
               <th className="num">Filas</th>
               <th className="num">Filas/s</th>
+              <th>Ritmo</th>
               <th className="num">Tiempo</th>
               <th className="num">Ocupado</th>
             </tr>
@@ -78,6 +94,22 @@ export function DetalleEjecucion({ detalle, resumen }: Props) {
                   </td>
                   <td className="num">{miles(movidas)}</td>
                   <td className="num">{miles(nodo.rows_per_second)}</td>
+                  <td>
+                    <Curva
+                      puntos={ritmo(
+                        detalle.progress
+                          .filter((m) => m.node === nodo.node)
+                          .map((m) => ({
+                            t: m.at_ms,
+                            filas: nodo.kind === "sink" ? m.rows_in : m.rows_out,
+                          })),
+                      )}
+                      desde={0}
+                      hasta={duracion}
+                      etiqueta={nodo.node}
+                      conTooltip
+                    />
+                  </td>
                   <td className="num">{milisegundos(nodo.elapsed_ms)}</td>
                   <td>
                     <div className="ocupacion">

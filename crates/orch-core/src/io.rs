@@ -80,6 +80,21 @@ impl Counters {
     }
 }
 
+/// Una vista de sólo lectura sobre los contadores de una entrada o una
+/// salida.
+///
+/// La telemetría la lee mientras el nodo corre, desde otra tarea. Son los
+/// mismos atómicos que el nodo ya incrementa: leerlos no añade nada al camino
+/// de los datos.
+#[derive(Debug, Clone)]
+pub struct Probe(Arc<Counters>);
+
+impl Probe {
+    pub fn stats(&self) -> IoStats {
+        self.0.stats()
+    }
+}
+
 /// Métricas acumuladas de un lado (entrada o salida) de un nodo.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IoStats {
@@ -102,7 +117,7 @@ pub struct Output {
     senders: Vec<BatchSender>,
     downstream_ids: Vec<NodeId>,
     downstream_signals: Vec<watch::Receiver<NodeSignal>>,
-    counters: Counters,
+    counters: Arc<Counters>,
     closed: AtomicBool,
 }
 
@@ -120,7 +135,7 @@ impl Output {
             senders,
             downstream_ids,
             downstream_signals,
-            counters: Counters::default(),
+            counters: Arc::default(),
             closed: AtomicBool::new(false),
         }
     }
@@ -188,6 +203,11 @@ impl Output {
 
     /// `true` cuando ningún consumidor sigue leyendo. Los orígenes deberían
     /// consultarlo para dejar de producir.
+    /// Para leer sus contadores desde fuera mientras el nodo corre.
+    pub fn probe(&self) -> Probe {
+        Probe(Arc::clone(&self.counters))
+    }
+
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
@@ -327,6 +347,11 @@ impl Input {
     ///
     /// Es lo que usa un join: cada puerto se convierte en una tabla distinta.
     /// Las métricas del nodo se siguen contabilizando.
+    /// Para leer sus contadores desde fuera mientras el nodo corre.
+    pub fn probe(&self) -> Probe {
+        Probe(Arc::clone(&self.counters))
+    }
+
     pub fn take_ports(&mut self) -> Vec<InputPort> {
         self.cursor = 0;
         std::mem::take(&mut self.ports)

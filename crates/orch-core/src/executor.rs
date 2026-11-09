@@ -7,7 +7,7 @@
 //! `channel_capacity * batch_size`, no por el tamaño del dataset.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tokio::sync::{broadcast, watch};
@@ -17,8 +17,8 @@ use tracing::Instrument;
 use crate::connector::{NodeContext, Sink, Source, Transform};
 use crate::dag::Dag;
 use crate::error::{OrchError, Result};
-use crate::event::{RunEvent, EVENT_CHANNEL_CAPACITY};
-use crate::io::{batch_channel, Input, IoStats, NodeSignal, Output};
+use crate::event::{NodeProgress, RunEvent, EVENT_CHANNEL_CAPACITY};
+use crate::io::{batch_channel, Input, IoStats, NodeSignal, Output, Probe};
 use crate::registry::Registry;
 use crate::schema::{InputSchemas, PortSchema};
 use crate::spec::{NodeKind, RetryPolicy};
@@ -195,6 +195,7 @@ impl Executor {
         let mut tasks: JoinSet<(usize, NodeReport)> = JoinSet::new();
         let mut out_edges = out_edges.into_iter();
         let mut inputs = inputs.into_iter();
+        let mut sondas: Vec<(String, Probe, Probe)> = Vec::with_capacity(n);
 
         for (i, runner) in runners.into_iter().enumerate() {
             let node = dag.node(i).clone();
@@ -211,6 +212,7 @@ impl Executor {
                 .map(|&d| (dag.node(d).id.clone(), signal_rxs[d].clone()))
                 .collect();
             let signal_tx = signal_txs[i].take().expect("un emisor de señal por nodo");
+            sondas.push((node.id.clone(), input.probe(), output.probe()));
 
             let ctx_base = NodeContext {
                 run_id: run_id.clone(),
@@ -250,6 +252,8 @@ impl Executor {
             );
         }
 
+        let muestreo = tokio::spawn(muestrear(self.events.clone(), run_id.clone(), sondas));
+
         let mut reports: Vec<Option<NodeReport>> = (0..n).map(|_| None).collect();
         while let Some(joined) = tasks.join_next().await {
             match joined {
@@ -280,6 +284,12 @@ impl Executor {
             })
             .collect();
 
+        // Con todos los nodos terminados, el progreso ya lo cuentan sus
+        // `NodeFinished`. Se espera a que el muestreo pare del todo: así
+        // ningún `Progress` puede llegar después del `RunFinished`.
+        muestreo.abort();
+        let _ = muestreo.await;
+
         let succeeded = nodes.iter().all(|r| r.status == NodeStatus::Succeeded);
         let elapsed_ms = started.elapsed().as_millis() as u64;
 
@@ -297,6 +307,62 @@ impl Executor {
             elapsed_ms,
             nodes,
         })
+    }
+}
+
+/// Cada cuánto se publica el progreso de una ejecución.
+///
+/// Cuatro veces por segundo basta para que un contador se vea moverse con
+/// suavidad. Es un evento por ejecución, no por nodo, así que no crece con el
+/// tamaño del pipeline.
+pub const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+
+/// Publica cómo va cada nodo mientras la ejecución sigue viva.
+///
+/// Lee los mismos contadores atómicos que los nodos ya incrementan: no toca
+/// el camino de los datos. Sin nadie escuchando no publica, y si nada se
+/// movió desde la última vez, tampoco: un nodo esperando una hora no llena el
+/// canal de eventos repetidos.
+async fn muestrear(
+    events: broadcast::Sender<RunEvent>,
+    run_id: String,
+    sondas: Vec<(String, Probe, Probe)>,
+) {
+    // El mismo reloj que marca los ticks: fuera de los tests es el del
+    // sistema, y en ellos avanza con el tiempo simulado de Tokio.
+    let started = tokio::time::Instant::now();
+    let mut ticker = tokio::time::interval(PROGRESS_EVERY);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // El primer tick es inmediato, y en el arranque no hay nada que contar.
+    ticker.tick().await;
+    let mut anterior: Vec<(IoStats, IoStats)> = Vec::new();
+    loop {
+        ticker.tick().await;
+        if events.receiver_count() == 0 {
+            continue;
+        }
+        let ahora: Vec<(IoStats, IoStats)> = sondas
+            .iter()
+            .map(|(_, entrada, salida)| (entrada.stats(), salida.stats()))
+            .collect();
+        if ahora == anterior {
+            continue;
+        }
+        let nodes = sondas
+            .iter()
+            .zip(&ahora)
+            .map(|((node, _, _), (input, output))| NodeProgress {
+                node: node.clone(),
+                input: *input,
+                output: *output,
+            })
+            .collect();
+        let _ = events.send(RunEvent::Progress {
+            run_id: run_id.clone(),
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            nodes,
+        });
+        anterior = ahora;
     }
 }
 

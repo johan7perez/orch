@@ -26,6 +26,9 @@ pub struct PipelineSpec {
     /// Cuándo debe ejecutarse solo. Sin esto, el pipeline sólo corre a mano.
     #[serde(default)]
     pub schedule: Option<ScheduleSpec>,
+    /// De qué avisar y a dónde. Sin esto, sólo de los fallos.
+    #[serde(default)]
+    pub alerts: Option<AlertsSpec>,
     pub nodes: Vec<NodeSpec>,
     #[serde(default)]
     pub edges: Vec<EdgeSpec>,
@@ -90,6 +93,116 @@ fn yes() -> bool {
     true
 }
 
+/// De qué avisar cuando una ejecución va mal, y a dónde.
+///
+/// Como `schedule`, vive en el propio fichero: lo que hay que vigilar de un
+/// pipeline es parte de él. Sin este bloque se avisa sólo de los fallos, y
+/// sólo donde alguien mira (la terminal, la ventana, el registro del demonio).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlertsSpec {
+    /// Avisar si la ejecución termina mal. Por defecto, sí.
+    #[serde(default = "yes")]
+    pub on_failure: bool,
+    /// Si en este tiempo no se mueve ni una fila, la ejecución está colgada:
+    /// `90s`, `10m`, `1h`.
+    #[serde(default)]
+    pub stalled_after: Option<Plazo>,
+    /// Avisar si tarda más que estas veces la mediana de sus últimas
+    /// ejecuciones correctas: `2` es el doble. Hacen falta al menos tres para
+    /// tener con qué comparar.
+    #[serde(default)]
+    pub slower_than: Option<f64>,
+    /// URL a la que mandar cada alerta como JSON: Slack, Teams o cualquier
+    /// receptor. Admite `${env:...}`, porque un webhook suele llevar un token.
+    #[serde(default)]
+    pub webhook: Option<String>,
+}
+
+impl Default for AlertsSpec {
+    fn default() -> Self {
+        Self {
+            on_failure: true,
+            stalled_after: None,
+            slower_than: None,
+            webhook: None,
+        }
+    }
+}
+
+/// Un plazo escrito como se dice: `90s`, `10m`, `1h`, o combinados, `1h30m`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Plazo(pub std::time::Duration);
+
+impl std::str::FromStr for Plazo {
+    type Err = String;
+
+    fn from_str(texto: &str) -> std::result::Result<Self, String> {
+        let fallo = || {
+            format!(
+                "`{texto}` no es un plazo: usa segundos, minutos u horas, como `90s`, `10m` o `1h`"
+            )
+        };
+        let mut segundos: u64 = 0;
+        let mut cifra = String::new();
+        for c in texto.trim().chars() {
+            if c.is_ascii_digit() {
+                cifra.push(c);
+                continue;
+            }
+            let unidad = match c {
+                's' => 1,
+                'm' => 60,
+                'h' => 3_600,
+                _ => return Err(fallo()),
+            };
+            let n: u64 = cifra.parse().map_err(|_| fallo())?;
+            segundos += n * unidad;
+            cifra.clear();
+        }
+        // Una cifra sin unidad al final (`10`) es ambigua: ¿segundos?
+        if !cifra.is_empty() || segundos == 0 {
+            return Err(fallo());
+        }
+        Ok(Plazo(std::time::Duration::from_secs(segundos)))
+    }
+}
+
+impl std::fmt::Display for Plazo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = self.0.as_secs();
+        let (h, m, s) = (s / 3_600, (s % 3_600) / 60, s % 60);
+        if h > 0 {
+            write!(f, "{h}h")?;
+        }
+        if m > 0 {
+            write!(f, "{m}m")?;
+        }
+        if s > 0 || (h == 0 && m == 0) {
+            write!(f, "{s}s")?;
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for Plazo {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Plazo {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let texto = String::deserialize(deserializer)?;
+        texto.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// Qué hacer cuando un pipeline debe arrancar y ya hay uno suyo corriendo.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -137,6 +250,11 @@ impl PipelineSpec {
             | NodeKind::Transform { config, .. }
             | NodeKind::Sink { config, .. }) = &mut node.kind;
             crate::secrets::expand_value(&node.id, config)?;
+        }
+        if let Some(webhook) = self.alerts.as_mut().and_then(|a| a.webhook.as_mut()) {
+            if let Some(expandido) = crate::secrets::expand("alerts", webhook)? {
+                *webhook = expandido;
+            }
         }
         Ok(())
     }

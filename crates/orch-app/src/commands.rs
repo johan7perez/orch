@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use orch_core::{Dag, Executor, PipelineSpec};
-use orch_store::{EventRow, NodeRow, RunSummary};
+use orch_store::{AlertRow, EventRow, NodeRow, ProgressRow, RunSummary};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -48,6 +48,10 @@ pub struct RunDetail {
     pub run_id: String,
     pub nodes: Vec<NodeRow>,
     pub events: Vec<EventRow>,
+    /// Cómo avanzó cada nodo: lo que dibuja su curva de ritmo.
+    pub progress: Vec<ProgressRow>,
+    /// Lo que se avisó durante la ejecución.
+    pub alerts: Vec<AlertRow>,
 }
 
 /// Pipelines del directorio actual.
@@ -160,6 +164,8 @@ pub async fn run_detail(state: State<'_, AppState>, run_id: String) -> Response<
         Ok::<_, orch_core::OrchError>(RunDetail {
             nodes: store.nodes_of(&run_id)?,
             events: store.events_of(&run_id, 500)?,
+            progress: store.progress_of(&run_id)?,
+            alerts: store.alerts_of(&run_id)?,
             run_id,
         })
     })
@@ -185,15 +191,28 @@ pub async fn start_run(app: AppHandle, state: State<'_, AppState>, path: String)
     tokio::spawn(async move {
         let executor = Executor::new(registry);
 
-        // Dos oyentes del mismo canal: uno pinta y el otro guarda.
+        // Tres oyentes del mismo canal: uno pinta, otro guarda y otro vigila.
         let bridge = crate::events::bridge(app.clone(), executor.subscribe());
         let recorder = orch_store::EventWriter::spawn(Arc::clone(&store), executor.subscribe());
+        let vigilancia = orch_alert::Vigilancia::para(dag.spec(), Some(&store));
+        let entrega =
+            orch_alert::Entrega::nueva(Some(Arc::clone(&store)), vigilancia.config.webhook.clone());
+        let ventana = app.clone();
+        let alertas = orch_alert::vigilar(
+            vigilancia,
+            executor.subscribe(),
+            entrega,
+            move |alerta, _problemas| {
+                let _ = ventana.emit("orch://alert", alerta);
+            },
+        );
 
         let started_at = chrono::Utc::now();
         let outcome = executor.run(&dag).await;
         drop(executor);
         bridge.await.ok();
         recorder.await.ok();
+        alertas.await.ok();
 
         match outcome {
             Ok(report) => {

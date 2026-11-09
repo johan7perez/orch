@@ -12,7 +12,7 @@ use orch_core::arrow::datatypes::{DataType, Field, Schema};
 use orch_core::arrow::record_batch::RecordBatch;
 use orch_core::{
     Dag, Executor, Input, NoConfig, NodeContext, NodeStatus, OrchError, Output, PipelineSpec,
-    Registry, Result, RunReport, Sink, Source,
+    Registry, Result, RunEvent, RunReport, Sink, Source,
 };
 
 fn batch(rows: usize, start: i64) -> RecordBatch {
@@ -531,4 +531,98 @@ edges:
         .await
         .expect_err("debería fallar");
     assert!(err.to_string().contains("no-existe"), "{err}");
+}
+
+// --- progreso -----------------------------------------------------------------
+
+/// Ejecuta y devuelve los `Progress` que se publicaron, con el informe.
+async fn con_progreso(
+    yaml: &str,
+    probe: &Probe,
+) -> (
+    RunReport,
+    Vec<(u64, Vec<orch_core::NodeProgress>)>,
+    Vec<RunEvent>,
+) {
+    let dag = Dag::build(PipelineSpec::from_yaml_str("test.yaml", yaml).expect("YAML válido"))
+        .expect("DAG válido");
+    let executor = Executor::new(registry(probe));
+    let mut oyente = executor.subscribe();
+    let informe = executor.run(&dag).await.expect("arranca");
+    drop(executor);
+    let mut progresos = Vec::new();
+    let mut todos = Vec::new();
+    while let Ok(evento) = oyente.recv().await {
+        if let RunEvent::Progress {
+            elapsed_ms, nodes, ..
+        } = &evento
+        {
+            progresos.push((*elapsed_ms, nodes.clone()));
+        }
+        todos.push(evento);
+    }
+    (informe, progresos, todos)
+}
+
+// El tiempo de Tokio va pausado: el sink duerme 100 ms por lote, así que diez
+// lotes son un segundo de reloj virtual, sin esperar uno de verdad.
+#[tokio::test(start_paused = true)]
+async fn el_progreso_se_publica_mientras_corre_y_nunca_retrocede() {
+    let probe = Probe::default();
+    let (informe, progresos, todos) = con_progreso(
+        r#"
+name: progreso
+nodes:
+  - { id: src, type: source, connector: emitter, config: { batches: 10, rows: 100 } }
+  - { id: dst, type: sink, connector: slow, config: { ms_per_batch: 100 } }
+edges:
+  - { from: src, to: dst }
+"#,
+        &probe,
+    )
+    .await;
+    assert!(informe.succeeded, "{informe:?}");
+
+    // Un segundo con una muestra cada 250 ms.
+    assert!(progresos.len() >= 3, "{progresos:?}");
+    for (_, nodos) in &progresos {
+        let ids: Vec<&str> = nodos.iter().map(|n| n.node.as_str()).collect();
+        assert_eq!(ids, ["src", "dst"]);
+    }
+    let tiempos: Vec<u64> = progresos.iter().map(|(t, _)| *t).collect();
+    assert!(tiempos.windows(2).all(|w| w[0] < w[1]), "{tiempos:?}");
+    let recibidas: Vec<u64> = progresos
+        .iter()
+        .map(|(_, nodos)| nodos[1].input.rows)
+        .collect();
+    assert!(recibidas.windows(2).all(|w| w[0] <= w[1]), "{recibidas:?}");
+    assert!(*recibidas.last().unwrap() <= 1_000);
+
+    // Nada de progreso después del final.
+    let fin = todos
+        .iter()
+        .position(|e| matches!(e, RunEvent::RunFinished { .. }))
+        .expect("hay RunFinished");
+    assert_eq!(fin, todos.len() - 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn un_nodo_parado_no_repite_el_mismo_progreso() {
+    let probe = Probe::default();
+    // Un lote y dos segundos de espera: los contadores no cambian en ocho
+    // ticks seguidos.
+    let (informe, progresos, _) = con_progreso(
+        r#"
+name: parado
+nodes:
+  - { id: src, type: source, connector: emitter, config: { batches: 1, rows: 100 } }
+  - { id: dst, type: sink, connector: slow, config: { ms_per_batch: 2000 } }
+edges:
+  - { from: src, to: dst }
+"#,
+        &probe,
+    )
+    .await;
+    assert!(informe.succeeded, "{informe:?}");
+    assert_eq!(progresos.len(), 1, "{progresos:?}");
 }

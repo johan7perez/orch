@@ -46,6 +46,14 @@ impl Dag {
                 "`settings.channel_capacity` debe ser mayor que 0".into(),
             ));
         }
+        if let Some(veces) = spec.alerts.as_ref().and_then(|a| a.slower_than) {
+            // Avisar de que tarda «una vez lo normal» avisaría siempre.
+            if veces.is_nan() || veces <= 1.0 {
+                return Err(OrchError::Validation(format!(
+                    "`alerts.slower_than` debe ser mayor que 1 (es {veces}): `2` avisa si tarda el doble"
+                )));
+            }
+        }
 
         let mut index = HashMap::with_capacity(spec.nodes.len());
         for (i, node) in spec.nodes.iter().enumerate() {

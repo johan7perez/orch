@@ -24,6 +24,7 @@ orch-store.workspace = true
 orch-schedule.workspace = true
 orch-edit.workspace = true
 orch-wasm.workspace = true
+orch-alert.workspace = true
 
 chrono.workspace = true
 serde.workspace = true

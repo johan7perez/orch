@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use orch_core::executor::{NodeReport, NodeStatus, RunReport};
-use orch_core::{IoStats, RunEvent};
+use orch_core::{IoStats, NodeProgress, RunEvent};
 use orch_store::{EventWriter, Store};
 use tempfile::TempDir;
 
@@ -245,4 +245,90 @@ async fn el_escritor_termina_solo_sin_eventos() {
     let writer = EventWriter::spawn(store, receiver);
     drop(sender);
     writer.await.expect("termina limpio");
+}
+
+fn progreso(run_id: &str, ms: u64, filas: u64) -> RunEvent {
+    let lado = |rows| IoStats {
+        rows,
+        batches: rows / 100,
+        bytes: rows * 8,
+        stalled_ms: 0,
+    };
+    RunEvent::Progress {
+        run_id: run_id.to_string(),
+        elapsed_ms: ms,
+        nodes: vec![
+            NodeProgress {
+                node: "origen".to_string(),
+                input: lado(0),
+                output: lado(filas),
+            },
+            NodeProgress {
+                node: "destino".to_string(),
+                input: lado(filas),
+                output: lado(0),
+            },
+        ],
+    }
+}
+
+#[tokio::test]
+async fn el_progreso_se_guarda_a_un_segundo_y_no_ensucia_el_registro() {
+    let store = Arc::new(Store::in_memory().expect("almacén"));
+    let (sender, receiver) = tokio::sync::broadcast::channel(64);
+    let writer = EventWriter::spawn(Arc::clone(&store), receiver);
+
+    // Diez muestras cada 250 ms, como las publica el motor: 2,5 segundos.
+    for i in 1..=10u64 {
+        sender
+            .send(progreso("run-progreso", i * 250, i * 1_000))
+            .expect("enviar");
+    }
+    drop(sender);
+    writer.await.expect("el escritor termina");
+
+    let muestras = store.progress_of("run-progreso").expect("leer");
+    let tiempos: Vec<u64> = muestras
+        .iter()
+        .filter(|m| m.node == "destino")
+        .map(|m| m.at_ms)
+        .collect();
+    // La primera de cada segundo: 250 (segundo 0), 1 000 y 2 000.
+    assert_eq!(tiempos, [250, 1_000, 2_000]);
+    let destino = muestras
+        .iter()
+        .find(|m| m.node == "destino" && m.at_ms == 2_000);
+    assert_eq!(destino.map(|m| m.rows_in), Some(8_000));
+
+    // En el registro de eventos no hay ni una.
+    assert!(store
+        .events_of("run-progreso", 100)
+        .expect("leer")
+        .is_empty());
+}
+
+#[test]
+fn podar_se_lleva_tambien_el_progreso() {
+    let store = Store::in_memory().expect("almacén");
+    let viejo = Utc::now() - chrono::Duration::days(10);
+    store
+        .record_run(&report("run-viejo", true), viejo)
+        .expect("guardar");
+    store
+        .append_progress(&[orch_store::ProgressRow {
+            run_id: "run-viejo".into(),
+            node: "origen".into(),
+            at_ms: 1_000,
+            rows_in: 0,
+            rows_out: 10,
+            bytes_in: 0,
+            bytes_out: 80,
+            stalled_in_ms: 0,
+            stalled_out_ms: 0,
+        }])
+        .expect("guardar progreso");
+    store
+        .prune(Utc::now() - chrono::Duration::days(1))
+        .expect("podar");
+    assert!(store.progress_of("run-viejo").expect("leer").is_empty());
 }

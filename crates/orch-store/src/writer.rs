@@ -4,7 +4,12 @@
 //! lotes. Nunca frena la ejecución: el canal descarta eventos si el
 //! consumidor se retrasa, que es exactamente lo que debe pasar — la
 //! telemetría no puede ser la que decida el ritmo de los datos.
+//!
+//! El progreso va aparte: no es un evento que leer en el registro sino una
+//! curva que dibujar, y se guarda en `node_progress` a un segundo de
+//! resolución.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,7 +19,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;
 use tokio::task::JoinHandle;
 
-use crate::store::{PendingEvent, Store};
+use crate::store::{PendingEvent, ProgressRow, Store};
 
 /// Eventos acumulados antes de escribir.
 const BATCH: usize = 256;
@@ -28,6 +33,9 @@ impl EventWriter {
     pub fn spawn(store: Arc<Store>, mut events: Receiver<RunEvent>) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut buffer: Vec<PendingEvent> = Vec::with_capacity(BATCH);
+            let mut progreso: Vec<ProgressRow> = Vec::new();
+            // El último segundo del que se guardó progreso, por ejecución.
+            let mut segundo: HashMap<String, u64> = HashMap::new();
             let mut seq: i64 = 0;
             let mut ticker = tokio::time::interval(FLUSH_EVERY);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -35,11 +43,36 @@ impl EventWriter {
             loop {
                 tokio::select! {
                     received = events.recv() => match received {
+                        Ok(RunEvent::Progress { run_id, elapsed_ms, nodes }) => {
+                            // El motor lo publica cuatro veces por segundo;
+                            // para una curva de minutos u horas, una basta.
+                            let tramo = elapsed_ms / 1_000;
+                            if segundo.get(&run_id) != Some(&tramo) {
+                                segundo.insert(run_id.clone(), tramo);
+                                progreso.extend(nodes.into_iter().map(|n| ProgressRow {
+                                    run_id: run_id.clone(),
+                                    node: n.node,
+                                    at_ms: elapsed_ms,
+                                    rows_in: n.input.rows,
+                                    rows_out: n.output.rows,
+                                    bytes_in: n.input.bytes,
+                                    bytes_out: n.output.bytes,
+                                    stalled_in_ms: n.input.stalled_ms,
+                                    stalled_out_ms: n.output.stalled_ms,
+                                }));
+                            }
+                            if buffer.len() + progreso.len() >= BATCH {
+                                flush(&store, &mut buffer, &mut progreso).await;
+                            }
+                        }
                         Ok(event) => {
+                            if let RunEvent::RunFinished { run_id, .. } = &event {
+                                segundo.remove(run_id);
+                            }
                             buffer.push(to_pending(&event, seq));
                             seq += 1;
-                            if buffer.len() >= BATCH {
-                                flush(&store, &mut buffer).await;
+                            if buffer.len() + progreso.len() >= BATCH {
+                                flush(&store, &mut buffer, &mut progreso).await;
                             }
                         }
                         Err(RecvError::Closed) => break,
@@ -52,24 +85,33 @@ impl EventWriter {
                             );
                         }
                     },
-                    _ = ticker.tick() => flush(&store, &mut buffer).await,
+                    _ = ticker.tick() => flush(&store, &mut buffer, &mut progreso).await,
                 }
             }
 
-            flush(&store, &mut buffer).await;
+            flush(&store, &mut buffer, &mut progreso).await;
         })
     }
 }
 
-async fn flush(store: &Arc<Store>, buffer: &mut Vec<PendingEvent>) {
-    if buffer.is_empty() {
+async fn flush(
+    store: &Arc<Store>,
+    buffer: &mut Vec<PendingEvent>,
+    progreso: &mut Vec<ProgressRow>,
+) {
+    if buffer.is_empty() && progreso.is_empty() {
         return;
     }
     let batch = std::mem::take(buffer);
+    let muestras = std::mem::take(progreso);
     let store = Arc::clone(store);
     // DuckDB es sincrónico: se escribe en un hilo de bloqueo para no ocupar
     // uno del runtime, que es donde corren los nodos.
-    let outcome = tokio::task::spawn_blocking(move || store.append_events(&batch)).await;
+    let outcome = tokio::task::spawn_blocking(move || {
+        store.append_events(&batch)?;
+        store.append_progress(&muestras)
+    })
+    .await;
 
     match outcome {
         Ok(Ok(())) => {}
@@ -160,5 +202,9 @@ fn describe(event: &RunEvent) -> (&'static str, Option<String>, Option<String>) 
                 if *succeeded { "correcto" } else { "fallido" }
             )),
         ),
+        // No llega aquí: el bucle lo guarda en `node_progress`.
+        RunEvent::Progress { elapsed_ms, .. } => {
+            ("progress", None, Some(format!("{elapsed_ms} ms")))
+        }
     }
 }

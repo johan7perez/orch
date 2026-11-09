@@ -432,11 +432,69 @@ tarda 17–64 ms en release (150–540 ms en debug).
 - ⬜ Plugins más pequeños (hoy ~2,4 MB, casi todo Arrow IPC y serde) y probar
   el contrato desde otro lenguaje.
 
-## Fase 3 — Monitoreo avanzado ⬜
+## Fase 3 — Monitoreo avanzado 🚧
 
-- ⬜ Lineage de datos a nivel de columna.
-- ⬜ Dashboard de throughput por nodo en tiempo real.
-- ⬜ Alertas (fallos, degradación de throughput, ejecuciones colgadas).
+### 3.1 Throughput por nodo en tiempo real ✅
+
+- ✅ El ejecutor publica `Progress` cada 250 ms: un evento por ejecución con
+  los contadores acumulados de todos los nodos. Lee los mismos atómicos que
+  los nodos ya incrementan, a través de una sonda de sólo lectura (`Probe`):
+  no toca el camino de los datos.
+- ✅ No publica si nadie escucha ni si nada se movió desde la última vez: un
+  nodo esperando no llena el canal de repeticiones. Y se para antes del
+  `RunFinished`, así que ningún progreso llega después del final.
+- ✅ **Medido antes y después** (`cargo run --release -p orch-connectors
+  --example motor`, 1 000 M de filas del generador al sink nulo con un oyente
+  enganchado): 1 566–1 624 ms sin muestreo, 1 540–1 580 ms con él. Nada que
+  se note.
+- ✅ El historial guarda una muestra por segundo en `node_progress`, aparte
+  del registro de eventos, y la poda la limpia con lo demás. Es lo que dibuja
+  la curva de una ejecución pasada y contra lo que se comparará una nueva
+  para saber si va más lenta de lo normal (3.2).
+- ✅ `orch run --follow`: una línea cada dos segundos con lo que se mueve y a
+  qué ritmo.
+- ✅ Aplicación: filas, filas por segundo y curva del último minuto por nodo
+  en vivo; en el detalle de una ejecución, la curva entera con el valor de
+  cada instante al pasar el puntero. Una curva por fila, de un solo color y
+  con el eje de tiempo compartido: múltiplos pequeños en vez de una gráfica
+  con veinte colores.
+- ✅ Tests con el tiempo de Tokio simulado: el progreso se publica mientras
+  corre, nunca retrocede, no llega después del final y no se repite si nada
+  se mueve; y el historial guarda uno por segundo sin ensuciar el registro.
+
+### 3.2 Alertas ✅
+
+- ✅ Bloque `alerts` en el propio pipeline, como `schedule`: `on_failure`
+  (por defecto, sí), `stalled_after` con plazos legibles (`90s`, `10m`,
+  `1h30m`; un `10` a secas se rechaza por ambiguo), `slower_than` (mayor que
+  1) y `webhook`, que admite `${env:...}`. Claves mal escritas, rechazadas.
+- ✅ Crate `orch-alert`: un vigilante que es un oyente más del canal de
+  eventos. Avisa de un **fallo** (con el nodo y su error, sin repetir el
+  nombre que el error ya trae), de una ejecución **colgada** (nada se mueve en
+  `stalled_after`: el motor sólo publica progreso cuando algo se mueve, así
+  que se vigila el silencio) y de una **lenta** (más de `slower_than` veces la
+  mediana de las últimas diez correctas, en cuanto pasa y sin esperar al
+  final). Cada una, una sola vez por ejecución.
+- ✅ Entrega: a quien vigila (terminal, demonio, ventana), al historial (tabla
+  `alerts`, que la poda limpia) y al webhook, con `text` para Slack y Teams.
+  Un webhook caído se cuenta y no impide el resto.
+- ✅ El demonio avisa también de un pipeline que **no llega a arrancar**: el
+  bloque `alerts` se lee del YAML en bruto, así que sirve aunque un nodo mal
+  escrito impida cargar el resto. Salió al escribir su test: leyendo el
+  pipeline entero, ese caso perdía justo el webhook.
+- ✅ Tests con el reloj simulado de Tokio (diez minutos de cuelgue en
+  milisegundos), mediana contra un historial de verdad, y entrega contra un
+  receptor HTTP local. Probado de punta a punta con la CLI: fallo, cuelgue
+  que avisa mientras sigue en marcha, y los tres llegando al webhook.
+- ✅ Aplicación: las alertas salen encima de la tabla de la ejecución en
+  curso según llegan, y en el detalle de una ejecución pasada desde el
+  historial. Un fallo o un cuelgue, en rojo; ir lenta, en el color de aviso;
+  siempre con el texto, nunca sólo el color.
+- ⬜ Notificación del sistema en la aplicación (hoy, dentro de la ventana).
+
+### 3.3 Lineage de datos a nivel de columna ⬜
+
+- ⬜ Para cada columna de salida, de qué columnas de origen viene.
 
 ## Fase 4 — Escalabilidad ⬜
 

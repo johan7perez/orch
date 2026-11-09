@@ -4970,10 +4970,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "orch-alert"
+version = "0.0.1"
+dependencies = [
+ "chrono",
+ "orch-core",
+ "orch-store",
+ "reqwest 0.13.5",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "orch-app"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "orch-alert",
  "orch-connectors",
  "orch-core",
  "orch-edit",
@@ -4999,6 +5015,7 @@ version = "0.0.1"
 dependencies = [
  "chrono",
  "clap",
+ "orch-alert",
  "orch-connectors",
  "orch-core",
  "orch-postgres",

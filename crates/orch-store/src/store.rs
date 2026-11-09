@@ -198,6 +198,141 @@ impl Store {
         Ok(())
     }
 
+    /// Añade muestras de progreso.
+    pub fn append_progress(&self, rows: &[ProgressRow]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let conn = self.lock();
+        let mut appender = conn
+            .appender("node_progress")
+            .map_err(|e| failed("no se pudo abrir el appender de progreso", e))?;
+        for row in rows {
+            appender
+                .append_row(params![
+                    row.run_id,
+                    row.node,
+                    row.at_ms as i64,
+                    row.rows_in as i64,
+                    row.rows_out as i64,
+                    row.bytes_in as i64,
+                    row.bytes_out as i64,
+                    row.stalled_in_ms as i64,
+                    row.stalled_out_ms as i64,
+                ])
+                .map_err(|e| failed("no se pudo añadir una muestra de progreso", e))?;
+        }
+        appender
+            .flush()
+            .map_err(|e| failed("no se pudo volcar el progreso", e))?;
+        Ok(())
+    }
+
+    /// Cómo avanzó cada nodo de una ejecución, en orden de tiempo.
+    pub fn progress_of(&self, run_id: &str) -> Result<Vec<ProgressRow>> {
+        let conn = self.lock();
+        let mut statement = conn
+            .prepare(
+                "SELECT run_id, node, at_ms, rows_in, rows_out, bytes_in, bytes_out,
+                        stalled_in_ms, stalled_out_ms
+                 FROM node_progress WHERE run_id = ?
+                 ORDER BY at_ms, node",
+            )
+            .map_err(|e| failed("no se pudo preparar la consulta", e))?;
+        let rows = statement
+            .query_map(params![run_id], |row| {
+                Ok(ProgressRow {
+                    run_id: row.get(0)?,
+                    node: row.get(1)?,
+                    at_ms: row.get::<_, i64>(2)? as u64,
+                    rows_in: row.get::<_, i64>(3)? as u64,
+                    rows_out: row.get::<_, i64>(4)? as u64,
+                    bytes_in: row.get::<_, i64>(5)? as u64,
+                    bytes_out: row.get::<_, i64>(6)? as u64,
+                    stalled_in_ms: row.get::<_, i64>(7)? as u64,
+                    stalled_out_ms: row.get::<_, i64>(8)? as u64,
+                })
+            })
+            .map_err(|e| failed("no se pudo leer el progreso", e))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| failed("no se pudo leer el progreso", e))
+    }
+
+    /// Lo que suele tardar un pipeline: la mediana de sus últimas `ultimas`
+    /// ejecuciones correctas.
+    ///
+    /// La mediana y no la media, para que una ejecución rarísima no mueva la
+    /// vara. Con menos de tres no hay con qué comparar y devuelve `None`: una
+    /// alerta de «va más lenta de lo normal» con una sola ejecución previa
+    /// sería una lotería.
+    pub fn typical_elapsed_ms(&self, pipeline: &str, ultimas: usize) -> Result<Option<u64>> {
+        let conn = self.lock();
+        let (mediana, cuantas): (Option<f64>, i64) = conn
+            .query_row(
+                "SELECT median(elapsed_ms), count(*) FROM (
+                     SELECT elapsed_ms FROM runs
+                     WHERE pipeline = ? AND status = 'succeeded' AND elapsed_ms IS NOT NULL
+                     ORDER BY started_at_us DESC LIMIT ?
+                 )",
+                params![pipeline, ultimas as i64],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| failed("no se pudo calcular la duración típica", e))?;
+        Ok(mediana.filter(|_| cuantas >= 3).map(|m| m.round() as u64))
+    }
+
+    /// Guarda una alerta que se dio.
+    pub fn record_alert(&self, alerta: &AlertRow) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO alerts (run_id, pipeline, at_us, kind, node, message)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![
+                alerta.run_id,
+                alerta.pipeline,
+                alerta.at.timestamp_micros(),
+                alerta.kind,
+                alerta.node,
+                alerta.message,
+            ],
+        )
+        .map_err(|e| failed("no se pudo guardar la alerta", e))?;
+        Ok(())
+    }
+
+    /// Las alertas de una ejecución, por orden.
+    pub fn alerts_of(&self, run_id: &str) -> Result<Vec<AlertRow>> {
+        self.alerts_where("WHERE run_id = ? ORDER BY at_us", params![run_id])
+    }
+
+    /// Las últimas alertas, de la más reciente a la más antigua.
+    pub fn recent_alerts(&self, limit: usize) -> Result<Vec<AlertRow>> {
+        self.alerts_where("ORDER BY at_us DESC LIMIT ?", params![limit as i64])
+    }
+
+    fn alerts_where(&self, filtro: &str, valores: impl duckdb::Params) -> Result<Vec<AlertRow>> {
+        let conn = self.lock();
+        let mut statement = conn
+            .prepare(&format!(
+                "SELECT run_id, pipeline, at_us, kind, node, message FROM alerts {filtro}"
+            ))
+            .map_err(|e| failed("no se pudo preparar la consulta", e))?;
+        let rows = statement
+            .query_map(valores, |row| {
+                Ok(AlertRow {
+                    run_id: row.get(0)?,
+                    pipeline: row.get(1)?,
+                    at: from_micros(row.get(2)?),
+                    kind: row.get(3)?,
+                    node: row.get(4)?,
+                    message: row.get(5)?,
+                })
+            })
+            .map_err(|e| failed("no se pudieron leer las alertas", e))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| failed("no se pudieron leer las alertas", e))
+    }
+
     /// Últimas ejecuciones, de la más reciente a la más antigua.
     pub fn recent_runs(&self, limit: usize) -> Result<Vec<RunSummary>> {
         let conn = self.lock();
@@ -308,7 +443,7 @@ impl Store {
 
         // Los hijos primero: si algo falla a mitad, es preferible dejar
         // huérfanas un puñado de filas de detalle que ejecuciones sin él.
-        for table in ["node_runs", "events"] {
+        for table in ["node_runs", "events", "node_progress", "alerts"] {
             conn.execute(
                 &format!(
                     "DELETE FROM {table}
@@ -348,6 +483,33 @@ impl Store {
             ))),
         }
     }
+}
+
+/// Una muestra del progreso de un nodo: lo que llevaba movido `at_ms`
+/// milisegundos después de arrancar la ejecución.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProgressRow {
+    pub run_id: String,
+    pub node: String,
+    pub at_ms: u64,
+    pub rows_in: u64,
+    pub rows_out: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub stalled_in_ms: u64,
+    pub stalled_out_ms: u64,
+}
+
+/// Una alerta que se dio.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AlertRow {
+    pub run_id: String,
+    pub pipeline: String,
+    pub at: DateTime<Utc>,
+    /// `fallo`, `colgada` o `lenta`.
+    pub kind: String,
+    pub node: Option<String>,
+    pub message: String,
 }
 
 /// Un evento pendiente de escribir.

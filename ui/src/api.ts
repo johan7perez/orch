@@ -164,6 +164,45 @@ export interface RunDetail {
   run_id: string;
   nodes: NodeRow[];
   events: EventRow[];
+  /** Cómo avanzó cada nodo, una muestra por segundo. Vacío en ejecuciones cortas. */
+  progress: ProgressRow[];
+  /** Las alertas que se dieron durante esta ejecución. */
+  alerts: AlertRow[];
+}
+
+export type TipoAlerta = "fallo" | "colgada" | "lenta";
+
+/** Una alerta guardada en el historial. */
+export interface AlertRow {
+  run_id: string;
+  pipeline: string;
+  at: string;
+  kind: TipoAlerta;
+  node: string | null;
+  message: string;
+}
+
+/** Una alerta según se da, en vivo. */
+export interface Alerta {
+  tipo: TipoAlerta;
+  pipeline: string;
+  run_id: string;
+  nodo: string | null;
+  mensaje: string;
+}
+
+/** Lo que llevaba movido un nodo `at_ms` después de arrancar la ejecución. */
+export interface ProgressRow {
+  node: string;
+  at_ms: number;
+  rows_in: number;
+  rows_out: number;
+}
+
+export interface NodeProgress {
+  node: string;
+  input: IoStats;
+  output: IoStats;
 }
 
 /** Los eventos que emite el motor, tal y como llegan del canal. */
@@ -200,7 +239,9 @@ export type RunEvent =
       pipeline: string;
       succeeded: boolean;
       elapsed_ms: number;
-    };
+    }
+  /** Cada 250 ms mientras la ejecución sigue viva: contadores acumulados. */
+  | { event: "progress"; run_id: string; elapsed_ms: number; nodes: NodeProgress[] };
 
 export interface IoStats {
   rows: number;
@@ -229,6 +270,11 @@ export function onRunEvent(handler: (event: RunEvent) => void): Promise<Unlisten
 /** Avisa de que una ejecución terminó, con su informe completo. */
 export function onFinished(handler: () => void): Promise<UnlistenFn> {
   return listen("orch://finished", () => handler());
+}
+
+/** Una alerta de la ejecución en curso: falló, se colgó o va lenta. */
+export function onAlert(handler: (alerta: Alerta) => void): Promise<UnlistenFn> {
+  return listen<Alerta>("orch://alert", (message) => handler(message.payload));
 }
 
 /** Avisa de que una ejecución no llegó ni a arrancar. */

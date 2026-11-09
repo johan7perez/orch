@@ -100,6 +100,36 @@ pub const MIGRATIONS: &[&str] = &[
         END AS busy_pct
     FROM node_runs;
     "#,
+    // 4 — cómo avanzó cada nodo durante la ejecución.
+    //
+    // Una muestra por segundo, contadores acumulados desde el arranque de la
+    // ejecución (`at_ms`): las filas por segundo de un tramo salen de dos
+    // seguidas. Es lo que dibuja la curva de una ejecución pasada y contra lo
+    // que se compara una nueva para saber si va más lenta de lo normal.
+    r#"
+    CREATE TABLE IF NOT EXISTS node_progress (
+        run_id         VARCHAR NOT NULL,
+        node           VARCHAR NOT NULL,
+        at_ms          BIGINT  NOT NULL,
+        rows_in        BIGINT  NOT NULL,
+        rows_out       BIGINT  NOT NULL,
+        bytes_in       BIGINT  NOT NULL,
+        bytes_out      BIGINT  NOT NULL,
+        stalled_in_ms  BIGINT  NOT NULL,
+        stalled_out_ms BIGINT  NOT NULL
+    );
+    "#,
+    // 5 — las alertas que se dieron: que se avisó, de qué y cuándo.
+    r#"
+    CREATE TABLE IF NOT EXISTS alerts (
+        run_id   VARCHAR NOT NULL,
+        pipeline VARCHAR NOT NULL,
+        at_us    BIGINT  NOT NULL,
+        kind     VARCHAR NOT NULL,
+        node     VARCHAR,
+        message  VARCHAR NOT NULL
+    );
+    "#,
 ];
 
 /// Tabla donde se anota qué migraciones se aplicaron.

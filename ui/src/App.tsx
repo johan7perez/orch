@@ -5,6 +5,7 @@ import { api, type RunDetail } from "./api";
 import { DetalleEjecucion } from "./vistas/DetalleEjecucion";
 import { Pipeline } from "./vistas/Pipeline";
 import { Lateral } from "./vistas/Lateral";
+import { Resguardo } from "./Resguardo";
 import { useMotor } from "./useMotor";
 
 export type Pestana = "pipelines" | "ejecuciones";
@@ -77,22 +78,24 @@ export function App() {
       />
 
       <main className="principal">
-        {pestana === "pipelines" ? (
-          <Pipeline
-            pipeline={pipeline}
-            enCurso={motor.enCurso}
-            error={motor.error}
-            cargando={motor.cargando}
-            problema={motor.workspace?.problem ?? null}
-            onEjecutar={(ruta, nombre) => void ejecutar(ruta, nombre)}
-            onEditado={() => void motor.refrescarWorkspace()}
-          />
-        ) : (
-          <DetalleEjecucion
-            detalle={detalle}
-            resumen={motor.runs.find((r) => r.run_id === seleccion) ?? null}
-          />
-        )}
+        <Resguardo clave={`${pestana}:${seleccion ?? ""}`}>
+          {pestana === "pipelines" ? (
+            <Pipeline
+              pipeline={pipeline}
+              enCurso={motor.enCurso}
+              error={motor.error}
+              cargando={motor.cargando}
+              problema={motor.workspace?.problem ?? null}
+              onEjecutar={(ruta, nombre) => void ejecutar(ruta, nombre)}
+              onEditado={() => void motor.refrescarWorkspace()}
+            />
+          ) : (
+            <DetalleEjecucion
+              detalle={detalle}
+              resumen={motor.runs.find((r) => r.run_id === seleccion) ?? null}
+            />
+          )}
+        </Resguardo>
       </main>
     </div>
   );

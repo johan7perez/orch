@@ -20,6 +20,7 @@ orch-postgres.workspace = true
 orch-store.workspace = true
 orch-schedule.workspace = true
 orch-wasm.workspace = true
+orch-alert.workspace = true
 
 chrono.workspace = true
 serde.workspace = true

@@ -1,12 +1,16 @@
 /**
- * Lo que está pasando ahora mismo: estado por nodo y el registro de eventos
- * según llegan. La barra y el botón de ejecutar los pone `Pipeline`.
+ * Lo que está pasando ahora mismo: cada nodo con su ritmo y el registro de
+ * eventos según llegan. La barra y el botón de ejecutar los pone `Pipeline`.
  */
 import { useEffect, useRef } from "react";
 
 import type { PipelineInfo } from "../api";
-import { hora } from "../formato";
+import { Curva, ritmo } from "../Curva";
+import { hora, miles } from "../formato";
 import type { EnCurso } from "../useMotor";
+
+/** Lo que enseña la curva en vivo: el último minuto. */
+const VENTANA_MS = 60_000;
 
 interface Props {
   pipeline: PipelineInfo;
@@ -34,26 +38,62 @@ export function EnVivo({ pipeline, enCurso, error, problema }: Props) {
 
       {suyo ? (
         <>
+          {suyo.alertas.map((alerta, i) => (
+            <p className={claseAlerta(alerta.tipo)} key={i} role="alert">
+              {alerta.mensaje}
+            </p>
+          ))}
+
           <p className="seccion">Nodos</p>
           <table className="tabla">
             <thead>
               <tr>
                 <th>Nodo</th>
                 <th>Estado</th>
+                <th className="num">Filas</th>
+                <th className="num">Filas/s</th>
+                <th>Ritmo</th>
               </tr>
             </thead>
             <tbody>
-              {[...suyo.nodos.entries()].map(([nodo, estado]) => (
-                <tr key={nodo}>
-                  <td>{nodo}</td>
-                  <td>
-                    <span className="estado">
-                      <span className={puntoDe(estado)} />
-                      {legible(estado)}
-                    </span>
-                  </td>
-                </tr>
-              ))}
+              {[...suyo.nodos.entries()]
+                .sort(([a], [b]) => posicion(suyo.orden, a) - posicion(suyo.orden, b))
+                .map(([nodo, estado]) => {
+                  const muestras = suyo.muestras.get(nodo) ?? [];
+                  const puntos = ritmo(muestras, 4);
+                  const final = suyo.finales.get(nodo);
+                  const filas = final?.filas ?? muestras.at(-1)?.filas ?? 0;
+                  // En marcha, el ritmo de ahora; terminado, el medio.
+                  const porSegundo =
+                    estado === "running"
+                      ? puntos.at(-1)?.v
+                      : final && final.ms > 0
+                        ? (final.filas * 1000) / final.ms
+                        : undefined;
+                  return (
+                    <tr key={nodo}>
+                      <td>{nodo}</td>
+                      <td>
+                        <span className="estado">
+                          <span className={puntoDe(estado)} />
+                          {legible(estado)}
+                        </span>
+                      </td>
+                      <td className="num">{miles(filas)}</td>
+                      <td className="num">
+                        {porSegundo === undefined ? "—" : miles(porSegundo)}
+                      </td>
+                      <td>
+                        <Curva
+                          puntos={puntos}
+                          desde={Math.max(0, suyo.transcurrido - VENTANA_MS)}
+                          hasta={suyo.transcurrido}
+                          etiqueta={nodo}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
             </tbody>
           </table>
 
@@ -80,6 +120,20 @@ export function EnVivo({ pipeline, enCurso, error, problema }: Props) {
       )}
     </div>
   );
+}
+
+/**
+ * Un fallo o una ejecución colgada son un error; ir lenta es un aviso. El
+ * texto va siempre: el color sólo refuerza.
+ */
+export function claseAlerta(tipo: string): string {
+  return tipo === "lenta" ? "nota nota--aviso" : "nota nota--error";
+}
+
+/** Dónde va un nodo en la tabla: los que aún no tienen sitio, al final. */
+function posicion(orden: string[], nodo: string): number {
+  const i = orden.indexOf(nodo);
+  return i < 0 ? orden.length : i;
 }
 
 function puntoDe(estado: string): string {

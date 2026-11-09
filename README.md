@@ -383,6 +383,54 @@ copias de sí mismo. Con `queue` se guarda uno —sólo uno, para que un atasco
 de una hora no se convierta en sesenta ejecuciones seguidas— y con `allow`
 arrancan a la vez.
 
+### Alertas
+
+Lo que hay que vigilar de un pipeline vive con él, como su `schedule`:
+
+```yaml
+alerts:
+  on_failure: true                   # sin el bloque, sólo esto
+  stalled_after: 10m                 # sin mover una fila en todo el pipeline
+  slower_than: 2                     # más del doble de lo que suele tardar
+  webhook: "${env:ORCH_ALERTAS_URL}" # Slack, Teams o cualquier receptor
+```
+
+- **Falló**: con el nodo y su error. Es lo único que se vigila sin bloque
+  `alerts`, el caso que nadie quiere perderse.
+- **Colgada**: pasa `stalled_after` sin que se mueva ni una fila. El motor
+  sólo publica progreso cuando algo se mueve, así que lo que se vigila es
+  exactamente el silencio.
+- **Lenta**: lleva más de `slower_than` veces la mediana de sus últimas diez
+  ejecuciones correctas. Se avisa **en cuanto pasa**, sin esperar a que
+  termine, y hacen falta al menos tres ejecuciones previas para tener con qué
+  comparar. La mediana y no la media, para que una rarísima no mueva la vara.
+
+Cada alerta sale una sola vez por ejecución y llega a la terminal (o a la
+ventana), al historial y al webhook. Un webhook caído se cuenta pero no
+impide el resto, y nada de esto frena la ejecución: el vigilante es otro
+oyente del canal de eventos.
+
+```
+▶ api-de-pedidos (2 nodos)
+⚠ `api-de-pedidos` lleva 3s sin mover una fila
+  ✗ pedir — intento 1 falló: …
+✗ api-de-pedidos terminó en 8003 ms
+⚠ `api-de-pedidos` falló en el nodo `pedir`: …
+```
+
+El webhook recibe un JSON con `text`, que es lo que leen los webhooks
+entrantes de Slack y de Teams, y los campos sueltos para quien quiera tratarlo
+en un programa:
+
+```json
+{"text": "⚠ `api-de-pedidos` lleva 3s sin mover una fila",
+ "tipo": "colgada", "pipeline": "api-de-pedidos", "run_id": "a1c3…", "nodo": null}
+```
+
+Con el demonio, un pipeline que **ni siquiera arranca** —falta un secreto, el
+YAML quedó a medias— también avisa: su bloque `alerts` se lee por su cuenta,
+aunque el resto del fichero no cargue.
+
 ### Joins
 
 Un nodo `sql` ve cada entrada como una tabla con el nombre de su puerto, así
@@ -690,12 +738,45 @@ El generador pasó 401 de sus 408 ms bloqueado esperando al CSV. Se mira en
 absoluto y no en porcentaje: un nodo que vive 3 ms sin esperar da 100% y no
 es el cuello de botella de nada.
 
+**El ritmo de cada nodo se ve mientras corre.** El ejecutor publica cuatro
+veces por segundo cuánto lleva movido cada nodo: un solo evento por
+ejecución, haya los nodos que haya, que lee los mismos contadores atómicos
+que los nodos ya incrementan. No publica si nadie escucha ni si nada se
+movió, así que un nodo esperando una hora no llena el canal de repeticiones.
+Medido con 1 000 M de filas del generador al sink nulo, no cuesta nada que se
+note (1 540–1 580 ms con el muestreo, 1 566–1 624 ms sin él).
+
+`orch run --follow` lo enseña como una línea cada dos segundos con lo que se
+está moviendo:
+
+```
+▶ ritmo-en-vivo (3 nodos)
+  · generar [source:generator] iniciado
+  · filtrar [transform:filter] iniciado
+  · tirar [sink:null] iniciado
+  … 2.00 s  generar 7 274 496 filas (3 635 430/s) · filtrar 7 232 869 filas (3 614 627/s) · tirar 7 232 869 filas (3 614 627/s)
+  … 4.00 s  generar 14 893 056 filas (3 809 280/s) · filtrar 14 892 389 filas (3 829 760/s) · tirar 14 892 389 filas (3 829 760/s)
+```
+
+En la aplicación, la vista *Ejecución* enseña por nodo sus filas, sus filas
+por segundo y la curva del último minuto; el detalle de una ejecución pasada,
+la curva entera, con el valor de cada instante al pasar el puntero. Todas las
+curvas de una tabla comparten el eje de tiempo, para que se vea qué nodo
+trabajaba cuándo.
+
 El historial vive en un fichero DuckDB (`orch.duckdb`, o `--store`), así que
-se puede consultar directamente:
+se puede consultar directamente. El progreso se guarda en `node_progress`, una
+muestra por segundo:
 
 ```sql
 SELECT pipeline, avg(elapsed_ms) FROM run_history
 WHERE started_at > now() - INTERVAL 7 DAY GROUP BY 1;
+
+-- Filas por segundo de cada nodo, segundo a segundo.
+SELECT node, at_ms,
+       (rows_out - lag(rows_out) OVER w) * 1000.0 / (at_ms - lag(at_ms) OVER w) AS filas_s
+FROM node_progress WHERE run_id = '...'
+WINDOW w AS (PARTITION BY node ORDER BY at_ms);
 ```
 
 **Los esquemas se propagan en `validate`.** Los orígenes declaran qué columnas
@@ -736,6 +817,8 @@ también hace usable el ciclo de desarrollo.
   memoria. Usa `memory_limit_mb` en esos nodos.
 - **No hay deshacer en el lienzo.** Cada cambio se escribe al momento en el
   fichero, así que lo que haya en git es la red de seguridad.
+- **Las alertas no llegan como notificación del sistema.** En la aplicación
+  se ven dentro de la ventana; para enterarse con ella cerrada, el webhook.
 - **Los plugins sólo pueden ser transformaciones.** Un origen o un destino
   necesitan red o disco, y darles ese acceso a un plugin pide decidir antes
   cómo se conceden los permisos.

@@ -377,7 +377,10 @@ button {
   border-bottom: none;
 }
 
-.num {
+.num,
+/* Sin esto `.tabla th` gana y la cabecera de una cifra se queda a la
+   izquierda de una columna alineada a la derecha. */
+.tabla th.num {
   text-align: right;
 }
 
@@ -479,6 +482,12 @@ button {
 .nota--error {
   color: var(--error);
   background: color-mix(in srgb, var(--error) 10%, transparent);
+  user-select: text;
+}
+
+.nota--aviso {
+  color: var(--aviso);
+  background: color-mix(in srgb, var(--aviso) 12%, transparent);
   user-select: text;
 }
 
@@ -1171,4 +1180,60 @@ select.control {
   font-size: 11px;
   line-height: 1.5;
   cursor: pointer;
+}
+
+/* --- Curva de ritmo --- */
+
+/* Una por fila, de un solo color: la identidad la da la fila. */
+.curva {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.curva svg {
+  display: block;
+  overflow: visible;
+}
+
+.curva__linea {
+  fill: none;
+  stroke: var(--acento);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* Un velo, no un bloque: el 10 % del mismo color. */
+.curva__area {
+  fill: var(--acento);
+  fill-opacity: 0.1;
+  stroke: none;
+}
+
+/* El punto lleva un anillo del color del fondo para leerse sobre la línea. */
+.curva__punto {
+  fill: var(--acento);
+  stroke: var(--fondo);
+  stroke-width: 2;
+}
+
+.curva__guia {
+  stroke: var(--texto-terciario);
+  stroke-width: 1;
+}
+
+.curva__tooltip {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  transform: translateX(-50%);
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: var(--fondo-elevado);
+  box-shadow: var(--sombra);
+  color: var(--texto);
+  font-size: var(--texto-xs);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 2;
 }
