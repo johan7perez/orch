@@ -254,7 +254,7 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
   tests —los de PostgreSQL contra un servidor real— y la app arrancada.
 - ⬜ Falta pasar por macOS.
 
-## Fase 2 — Diseñador visual + SDK de conectores 🚧
+## Fase 2 — Diseñador visual + SDK de conectores ✅
 
 ### 2.1 Lienzo del pipeline (lectura) ✅
 
@@ -391,11 +391,46 @@ tarda 17–64 ms en release (150–540 ms en debug).
   siguiente es pintarla en un `<canvas>` por debajo de cierto zoom en vez de
   con elementos del DOM.
 
-### 2.5 Plugins WASM y SDK de conectores ⬜
+### 2.5 Plugins WASM y SDK de conectores ✅
 
-- ⬜ Arquitectura de plugins WASM y SDK.
-- ⬜ **Medir el overhead frente a los conectores nativos** antes de
-  comprometerse; si es alto, reservarlo para conectores de baja frecuencia.
+- ✅ **Primero, medir** (`cargo run --release -p orch-wasm --example medir`):
+  la misma transformación compilada nativa y como plugin, sobre los mismos
+  lotes. Cruzar la frontera cuesta ~30 ns por fila en lotes de 8 192, y el
+  código dentro del sandbox va unas dos veces más lento que el nativo:
+  pasar a mayúsculas una columna, ~35 ns por fila nativo y ~110 como plugin.
+  Junto a cualquier E/S real es poco; para el núcleo en memoria (5 ns por
+  fila), no. **Decisión:** los conectores y transformaciones de Orch siguen
+  siendo nativos, y los plugins son el mecanismo para lo que Orch no trae.
+- ✅ Contrato en WIT (`wit/orch-plugin.wit`), con el modelo de componentes de
+  WebAssembly: un plugin se puede escribir en cualquier lenguaje que compile
+  a un componente. Los lotes cruzan como IPC de Arrow, la copia que conserva
+  tipos y nulos sin inventar un formato.
+- ✅ SDK en Rust (`orch-plugin`): un trait, `Transformacion`, y una macro,
+  `exportar!`. La config se declara con un struct y su esquema —con las
+  descripciones de los `///`— llega solo al inspector, como en un conector
+  nativo. Fuera de WASM el mismo crate es una biblioteca nativa, que es como
+  se mide la frontera.
+- ✅ Host (`orch-wasm`, sobre wasmtime): una instancia por nodo, sin ficheros,
+  red ni entorno; 512 MB de memoria y 30 s por llamada; las llamadas, fuera
+  de los hilos del motor; los lotes, en trozos de 8 192 filas, el tamaño que
+  mejor sale (con 65 536 el lote serializado no cabe en la caché y cada fila
+  cuesta casi el doble).
+- ✅ Caché de compilación: compilar un plugin de 2,4 MB cuesta ~1 s la primera
+  vez y ~40 ms los arranques siguientes.
+- ✅ Los plugins viven en `plugins/` dentro de la carpeta de pipelines, para
+  que sea portable, o donde diga `ORCH_PLUGINS`. Los cargan la CLI, el
+  demonio y la aplicación, que los enseña en su propio grupo de la paleta.
+  Un plugin no puede llamarse como un componente que ya existe.
+- ✅ Tests con plugins de verdad: de extremo a extremo, errores atribuidos a
+  su nodo, y un plugin (`fisgon`) que intenta leer un fichero que existe,
+  conectarse a un puerto que escucha y ver una variable que está, y no
+  puede. Fuera del sandbox las tres sondas funcionan, así que la prueba vale.
+- ✅ La versión mínima de Rust sube a 1.97, la que exige wasmtime 50. Para un
+  sandbox, ir con la versión al día pesa más que soportar compiladores viejos.
+- ⬜ Orígenes y destinos como plugins: necesitan red o disco, y antes hay que
+  decidir cómo se conceden esos permisos (por pipeline, por plugin).
+- ⬜ Plugins más pequeños (hoy ~2,4 MB, casi todo Arrow IPC y serde) y probar
+  el contrato desde otro lenguaje.
 
 ## Fase 3 — Monitoreo avanzado ⬜
 

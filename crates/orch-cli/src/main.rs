@@ -27,6 +27,11 @@ struct Cli {
     #[arg(long, global = true, env = "ORCH_STORE", default_value = "orch.duckdb")]
     store: PathBuf,
 
+    /// Carpeta de plugins WASM. Por defecto, la subcarpeta `plugins/` de la
+    /// carpeta del pipeline (o de `--dir`, con el demonio).
+    #[arg(long, global = true, env = "ORCH_PLUGINS")]
+    plugins: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -112,7 +117,11 @@ fn main() -> ExitCode {
         }
     };
 
-    match runtime.block_on(dispatch(cli.command, &cli.store)) {
+    let plugins = cli
+        .plugins
+        .clone()
+        .or_else(|| carpeta_base(&cli.command).map(|base| base.join("plugins")));
+    match runtime.block_on(dispatch(cli.command, &cli.store, plugins.as_deref())) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err}");
@@ -132,17 +141,48 @@ fn init_tracing(level: &str) {
         .init();
 }
 
-/// Todo lo que el binario sabe ejecutar.
-fn full_registry() -> std::sync::Arc<orch_core::Registry> {
+/// Todo lo que el binario sabe ejecutar, más los plugins de la carpeta.
+///
+/// Un plugin que no carga no impide nada: se avisa y se sigue. Si un
+/// pipeline lo usa, fallará al validarse con el motivo de siempre.
+fn full_registry(plugins: Option<&std::path::Path>) -> std::sync::Arc<orch_core::Registry> {
     let mut registry = orch_connectors::default_registry();
     orch_sql::register(&mut registry);
     orch_rest::register(&mut registry);
     orch_postgres::register(&mut registry);
+    if let Some(carpeta) = plugins {
+        for aviso in orch_wasm::registrar_carpeta(&mut registry, carpeta) {
+            eprintln!("aviso: {aviso}");
+        }
+    }
     std::sync::Arc::new(registry)
 }
 
-async fn dispatch(command: Command, store_path: &std::path::Path) -> orch_core::Result<ExitCode> {
-    let registry = full_registry();
+/// La carpeta a la que pertenece lo que pide el comando: ahí se buscan sus
+/// plugins. Los comandos que sólo leen el historial no los necesitan.
+fn carpeta_base(command: &Command) -> Option<PathBuf> {
+    let carpeta_de = |fichero: &std::path::Path| {
+        fichero
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
+    match command {
+        Command::Validate { pipeline } | Command::Graph { pipeline } => Some(carpeta_de(pipeline)),
+        Command::Run { pipeline, .. } => Some(carpeta_de(pipeline)),
+        Command::Daemon { dir, .. } => Some(dir.clone()),
+        Command::Connectors { .. } => Some(PathBuf::from(".")),
+        Command::Runs { .. } | Command::Prune { .. } | Command::Logs { .. } => None,
+    }
+}
+
+async fn dispatch(
+    command: Command,
+    store_path: &std::path::Path,
+    plugins: Option<&std::path::Path>,
+) -> orch_core::Result<ExitCode> {
+    let registry = full_registry(plugins);
 
     match command {
         Command::Daemon { dir, keep_days } => {

@@ -118,8 +118,8 @@ export function Diseno({ pipeline, onEditado }: Props) {
   // se estaba escribiendo no se guardó, y dejarlo en el campo haría creer
   // que sí.
   const [rechazos, setRechazos] = useState(0);
-  // El catálogo se pide una vez: los componentes registrados no cambian
-  // mientras la ventana está abierta.
+  // El catálogo se pide al abrir cada pipeline: los plugins viven con los
+  // pipelines, así que cambiar de carpeta cambia los componentes.
   const [catalogo, setCatalogo] = useState<Catalog | null>(null);
   // Dónde van los nodos mientras se arrastran. El lienzo es controlado: sin
   // esto no se moverían hasta que el motor escribiera la posición al soltar.
@@ -152,7 +152,7 @@ export function Diseno({ pipeline, onEditado }: Props) {
       .catalog()
       .then(setCatalogo)
       .catch(() => setCatalogo(null));
-  }, []);
+  }, [pipeline.path]);
 
   useEffect(() => {
     ruta.current = pipeline.path;
@@ -774,12 +774,7 @@ function encuadre(
   };
 }
 
-/**
- * El esquema del componente de un nodo.
- *
- * El catálogo se pide una vez y se reutiliza: los componentes registrados no
- * cambian mientras la ventana está abierta.
- */
+/** El esquema del componente de un nodo, del catálogo. */
 function esquemaDe(
   catalogo: Catalog | null,
   kind: string,

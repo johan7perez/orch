@@ -1,0 +1,29 @@
+package orch:plugin@0.1.0;
+
+/// Una transformación de Orch escrita como plugin.
+///
+/// Es un componente de WebAssembly: se puede escribir en cualquier lenguaje
+/// que compile a uno (Rust con el SDK `orch-plugin`, pero también Python, JS
+/// o Go), y corre aislado, sin acceso a ficheros, red ni entorno.
+///
+/// Los lotes cruzan la frontera como un stream IPC de Arrow (esquema + un
+/// lote). Ningún puntero puede cruzar el sandbox, así que copiar es
+/// inevitable; IPC es la copia que conserva tipos, nulos y metadatos sin
+/// inventar un formato propio.
+world transformacion {
+  /// Nombre con el que se usa en el YAML: `op: <nombre>`.
+  export nombre: func() -> string;
+
+  /// Esquema JSON de la config. Lo enseñan el inspector del lienzo y
+  /// `orch connectors`, igual que el de una transformación nativa.
+  export esquema-config: func() -> string;
+
+  /// Prepara la transformación con la config del nodo, en JSON.
+  export iniciar: func(config: string) -> result<_, string>;
+
+  /// Procesa un lote. Puede devolver cero, uno o varios.
+  export procesar: func(lote: list<u8>) -> result<list<list<u8>>, string>;
+
+  /// La entrada terminó: lo que quede por emitir.
+  export terminar: func() -> result<list<list<u8>>, string>;
+}

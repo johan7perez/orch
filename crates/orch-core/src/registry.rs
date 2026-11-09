@@ -4,7 +4,7 @@
 //! la Fase 2, los plugins WASM) se registran aquí y el ejecutor sólo resuelve
 //! nombres.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -24,6 +24,8 @@ pub struct Registry {
     /// Esquema de config por componente, indexado por «tipo/nombre».
     schemas: BTreeMap<String, Value>,
     pushdown: BTreeMap<String, crate::pushdown::PushdownHandler>,
+    /// Componentes registrados en tiempo de ejecución (plugins), «tipo/nombre».
+    dynamic: BTreeSet<String>,
 }
 
 impl std::fmt::Debug for Registry {
@@ -72,6 +74,32 @@ impl Registry {
             Box::new(move |node, config| factory(node, crate::parse_config::<C>(node, config)?)),
         );
         self
+    }
+
+    /// Registra una transformación cuyo esquema de config sólo se conoce al
+    /// cargarla, no al compilar: la de un plugin.
+    ///
+    /// La fábrica recibe la config tal cual; validarla es cosa suya.
+    pub fn register_transform_dyn<F>(
+        &mut self,
+        name: impl Into<String>,
+        schema: Value,
+        factory: F,
+    ) -> &mut Self
+    where
+        F: Fn(&str, &Value) -> Result<Arc<dyn Transform>> + Send + Sync + 'static,
+    {
+        let name = name.into();
+        self.schemas.insert(clave("transform", &name), schema);
+        self.dynamic.insert(clave("transform", &name));
+        self.transforms.insert(name, Box::new(factory));
+        self
+    }
+
+    /// Si el componente se registró en tiempo de ejecución: un plugin, no
+    /// algo compilado con el binario.
+    pub fn is_dynamic(&self, kind: &str, name: &str) -> bool {
+        self.dynamic.contains(&clave(kind, name))
     }
 
     pub fn register_sink<C, F>(&mut self, name: impl Into<String>, factory: F) -> &mut Self

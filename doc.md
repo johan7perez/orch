@@ -81,6 +81,9 @@ Esta especificación es el punto de partida y se deja como estaba. Lo que dejaba
 abierto se fue concretando así; el detalle de cada fase está en
 [docs/PLAN.md](docs/PLAN.md) y el de cada decisión, en el [README](README.md).
 
+- **Plugins: modelo de componentes de WebAssembly, sobre wasmtime.** El
+  contrato está en WIT, los lotes cruzan como IPC de Arrow, y hay un SDK en
+  Rust. De momento, sólo transformaciones.
 - **UI: React + React Flow.** De las dos opciones del stack. El lienzo dibuja
   y edita el mismo YAML que se ejecuta: no hay un formato aparte para el
   diseñador, y editar desde el lienzo toca sólo las líneas del cambio, con
@@ -112,5 +115,11 @@ Y en qué quedaron los riesgos:
   un tamaño legible, con unas decenas de nodos a la vista, y así va fluido; la
   vista general de cientos de nodos sigue siendo lenta, y el paso siguiente
   sería pintarla en un `<canvas>`.
-- **Overhead de plugins WASM:** pendiente de medir en la Fase 2.5, antes de
-  comprometerse con la arquitectura.
+- **Overhead de plugins WASM:** medido en la Fase 2.5 con la misma
+  transformación compilada de las dos formas. Cruzar la frontera cuesta ~30 ns
+  por fila y el código dentro del sandbox va unas dos veces más lento. Se
+  aplicó lo que preveía este riesgo: los conectores críticos son nativos, y
+  los plugins, para lo que Orch no trae.
+- **Seguridad de los plugins:** cada instancia corre sin ficheros, red ni
+  entorno, con tope de memoria y de tiempo por llamada; un test lo comprueba
+  con un plugin que intenta salirse.

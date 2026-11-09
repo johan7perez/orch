@@ -4,20 +4,23 @@ Plataforma local de orquestación y transporte de datos. La especificación
 completa está en [doc.md](doc.md); el desglose por fases, en
 [docs/PLAN.md](docs/PLAN.md).
 
-**Estado: Fases 0 y 1 completas; Fase 2 en curso.** Motor de DAG con
-ejecución en streaming, transformaciones SQL sobre DataFusion, conectores
+**Estado: Fases 0, 1 y 2 completas.** Motor de DAG con ejecución en
+streaming, transformaciones SQL sobre DataFusion, conectores
 CSV/Parquet/PostgreSQL/REST, historial en DuckDB y demonio con disparadores
 cron, más la aplicación de escritorio (Tauri) con el lienzo del pipeline, que
-ya edita: añadir, conectar, configurar, colocar y quitar nodos escribe el YAML
-tocando sólo lo que cambia, y aguanta pipelines de cientos de nodos. Lo
-siguiente son los plugins WASM y el SDK de conectores (Fase 2.5).
+edita el YAML tocando sólo lo que cambia y aguanta pipelines de cientos de
+nodos. Las transformaciones de terceros llegan como plugins de WebAssembly,
+aislados y con un SDK en Rust. Lo siguiente es el monitoreo avanzado
+(Fase 3).
 
 ---
 
 ## Requisitos
 
-Rust estable (1.85 o superior), y Node.js 20.19 o superior para la interfaz
-de la aplicación de escritorio (lo exige Vite 7).
+Rust estable (1.97 o superior: lo exige wasmtime, el motor de los plugins), y
+Node.js 20.19 o superior para la interfaz de la aplicación de escritorio (lo
+exige Vite 7). Para compilar plugins hace falta además el target de
+WebAssembly: `rustup target add wasm32-wasip2`.
 
 ### Windows
 
@@ -84,7 +87,14 @@ cargo fmt --all
 
 Los tests de PostgreSQL y el del llavero **se saltan solos** si no hay
 servidor (`ORCH_TEST_PG_DSN`) o almacén de credenciales, y entonces cuentan
-como aprobados. El aviso sólo se ve con `-- --nocapture`.
+como aprobados. Los de plugins, igual si no están compilados a WASM: hay que
+hacerlo antes, porque compilar desde un test bloquearía el mismo `target`
+que está usando `cargo test`. El aviso sólo se ve con `-- --nocapture`.
+
+```sh
+cargo build --release --target wasm32-wasip2 \
+  -p orch-plugin-identidad -p orch-plugin-mayusculas -p orch-plugin-fisgon
+```
 
 Para medir el lienzo con un pipeline grande:
 
@@ -495,6 +505,90 @@ config:
     # verify: false               # o desactivarlo, a sabiendas
 ```
 
+## Plugins WASM
+
+Lo que Orch no trae se puede añadir como plugin: una transformación escrita en
+Rust (o en cualquier lenguaje que compile a un componente de WebAssembly) que
+se usa en el YAML como cualquier otra, con `op:`. Aparece en la paleta del
+lienzo, en su propio grupo; el inspector genera el formulario de su config a
+partir del esquema que declara el propio plugin; y `orch connectors` la lista
+marcada como `(plugin)`.
+
+Los plugins viven en la subcarpeta `plugins/` de la carpeta de pipelines, para
+que una carpeta sea portable con todo lo que necesita, igual que sus rutas se
+resuelven contra ella. `--plugins` u `ORCH_PLUGINS` apuntan a otra.
+
+Escribir uno con el SDK ([`orch-plugin`](crates/orch-plugin)):
+
+```rust
+use orch_plugin::{RecordBatch, Transformacion};
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Config {
+    /// Columna de texto que se pasa a mayúsculas.
+    columna: String,
+}
+
+struct Mayusculas { config: Config }
+
+impl Transformacion for Mayusculas {
+    const NOMBRE: &'static str = "mayusculas";
+    type Config = Config;
+
+    fn nueva(config: Config) -> Result<Self, String> { Ok(Self { config }) }
+
+    fn procesar(&mut self, lote: RecordBatch) -> Result<Vec<RecordBatch>, String> {
+        // ...
+    }
+}
+
+orch_plugin::exportar!(Mayusculas);
+```
+
+```sh
+cargo build --release --target wasm32-wasip2 -p orch-plugin-mayusculas
+cp target/wasm32-wasip2/release/orch_plugin_mayusculas.wasm mis-pipelines/plugins/
+```
+
+El ejemplo completo y otros dos están en [plugins/](plugins). El contrato,
+para escribirlos en otro lenguaje, es [wit/orch-plugin.wit](wit/orch-plugin.wit);
+de momento sólo está probado desde Rust.
+
+Lo que garantiza:
+
+- **Aislamiento.** Cada nodo que usa un plugin tiene su propia instancia, sin
+  ficheros, sin red y sin variables de entorno. Hay un test que lo comprueba
+  con un plugin que lo intenta, contra un fichero que existe, un puerto que
+  escucha y una variable que está.
+- **Límites.** 512 MB de memoria por instancia y 30 s por llamada: un plugin
+  colgado hace fallar su nodo, no deja el pipeline esperando. Sus llamadas
+  corren fuera de los hilos del motor, así que tampoco frena a los demás
+  nodos.
+- **Nada se suplanta.** Un plugin que se llame como un componente que ya
+  existe no se carga: un `sql` de terceros que sustituyera en silencio al de
+  verdad sería un agujero, no una extensión.
+- **Errores en su sitio.** Una config que el plugin rechaza es un error de
+  config del nodo, y un fallo al procesar es un fallo del nodo, igual que con
+  uno nativo.
+
+Lo que cuesta, medido con la misma transformación compilada de las dos formas
+(`cargo run --release -p orch-wasm --example medir`):
+
+| | Nativo | Plugin |
+|---|---|---|
+| Cruzar la frontera (plugin que no hace nada) | — | ~30 ns/fila |
+| Pasar a mayúsculas una columna de texto | ~35 ns/fila | ~110 ns/fila (×3) |
+| Compilar el plugin (2,4 MB), la primera vez | — | ~1 s |
+| Cargarlo en los arranques siguientes (caché) | — | ~40 ms |
+
+Junto a cualquier E/S real —un CSV, PostgreSQL a ~700 ns por fila, una API—
+es poco. Para el núcleo en memoria, que mueve una fila en 5 ns, no: por eso
+los conectores y transformaciones de Orch son nativos, y los plugins son para
+lo que Orch no trae. Los lotes cruzan en trozos de 8 192 filas, el tamaño que
+mejor sale: por encima, el lote serializado deja de caber en la caché del
+procesador y cada fila cuesta casi el doble.
+
 ## Arquitectura
 
 ```
@@ -503,6 +597,8 @@ crates/
   orch-store/        historial de ejecuciones y métricas, en DuckDB
   orch-schedule/     disparadores cron y encadenamiento entre pipelines
   orch-edit/         edición del YAML desde el lienzo, tocando sólo lo que cambia
+  orch-wasm/         carga y ejecución de plugins WASM, aislados
+  orch-plugin/       SDK para escribir plugins en Rust
   orch-connectors/   implementaciones nativas (CSV, generador, null, transformaciones)
   orch-sql/          transformaciones con expresiones, sobre DataFusion
   orch-rest/         conector HTTP: paginación, límite de tasa, reintentos
@@ -510,12 +606,14 @@ crates/
   orch-cli/          binario `orch`
   orch-app/          aplicación de escritorio (Tauri)
 ui/                  frontend de la aplicación (React + Vite)
+plugins/             plugins de ejemplo
+wit/                 el contrato entre Orch y sus plugins
 ```
 
 El core no conoce ninguna implementación concreta: recibe un `Registry` con lo
 que haya disponible. Por eso el mismo motor sirve a la CLI, al demonio y a la
-aplicación de escritorio sin cambios, y es lo que servirá a los conectores en
-WASM (Fase 2.5).
+aplicación de escritorio sin cambios, y un plugin WASM se registra igual que
+un conector nativo.
 
 ### Decisiones que conviene conocer
 
@@ -638,3 +736,6 @@ también hace usable el ciclo de desarrollo.
   memoria. Usa `memory_limit_mb` en esos nodos.
 - **No hay deshacer en el lienzo.** Cada cambio se escribe al momento en el
   fichero, así que lo que haya en git es la red de seguridad.
+- **Los plugins sólo pueden ser transformaciones.** Un origen o un destino
+  necesitan red o disco, y darles ese acceso a un plugin pide decidir antes
+  cómo se conceden los permisos.

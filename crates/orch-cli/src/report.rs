@@ -3,10 +3,35 @@
 use orch_core::{Dag, NodeStatus, Pushed, Registry, RunReport};
 
 pub fn print_registry(registry: &Registry) {
-    print_list("sources", &registry.source_names());
-    print_list("transforms", &registry.transform_names());
-    print_list("sinks", &registry.sink_names());
+    print_list(
+        "sources",
+        &marcados(registry, "source", registry.source_names()),
+    );
+    print_list(
+        "transforms",
+        &marcados(registry, "transform", registry.transform_names()),
+    );
+    print_list("sinks", &marcados(registry, "sink", registry.sink_names()));
     print_list("con pushdown", &registry.pushdown_names());
+}
+
+/// Los nombres, con los que vienen de un plugin marcados como tales: quien
+/// lee la lista tiene que saber qué no viene con el binario.
+fn marcados<'a>(
+    registry: &Registry,
+    kind: &str,
+    names: Vec<&'a str>,
+) -> Vec<std::borrow::Cow<'a, str>> {
+    names
+        .into_iter()
+        .map(|name| {
+            if registry.is_dynamic(kind, name) {
+                std::borrow::Cow::Owned(format!("{name}  (plugin)"))
+            } else {
+                std::borrow::Cow::Borrowed(name)
+            }
+        })
+        .collect()
 }
 
 /// Qué trabajo se empujó hasta el origen.
@@ -24,7 +49,7 @@ pub fn print_pushdown(pushed: &[Pushed]) {
     }
 }
 
-fn print_list(title: &str, names: &[&str]) {
+fn print_list(title: &str, names: &[impl std::fmt::Display]) {
     println!("{title}:");
     if names.is_empty() {
         println!("  (ninguno)");
@@ -309,7 +334,7 @@ fn thousands(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(' ');
         }
         out.push(ch);

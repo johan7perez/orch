@@ -19,6 +19,7 @@ orch-rest.workspace = true
 orch-postgres.workspace = true
 orch-store.workspace = true
 orch-schedule.workspace = true
+orch-wasm.workspace = true
 
 chrono.workspace = true
 serde.workspace = true

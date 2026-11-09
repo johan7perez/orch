@@ -91,6 +91,8 @@ export type Edit =
 export interface Component {
   name: string;
   schema: EsquemaObjeto | null;
+  /** Viene de un plugin WASM de la carpeta, no con la aplicación. */
+  plugin: boolean;
 }
 
 export interface Catalog {

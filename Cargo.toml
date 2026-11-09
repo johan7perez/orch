@@ -9,6 +9,11 @@ members = [
     "crates/orch-store",
     "crates/orch-schedule",
     "crates/orch-edit",
+    "crates/orch-wasm",
+    "crates/orch-plugin",
+    "plugins/fisgon",
+    "plugins/identidad",
+    "plugins/mayusculas",
     "crates/orch-cli",
     "crates/orch-app",
 ]
@@ -16,7 +21,7 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.97"
 license = "MIT"
 repository = "https://github.com/johanperez/orch"
 
@@ -29,8 +34,15 @@ orch-postgres = { path = "crates/orch-postgres", version = "0.0.1" }
 orch-store = { path = "crates/orch-store", version = "0.0.1" }
 orch-schedule = { path = "crates/orch-schedule", version = "0.0.1" }
 orch-edit = { path = "crates/orch-edit", version = "0.0.1" }
+orch-wasm = { path = "crates/orch-wasm", version = "0.0.1" }
+orch-plugin = { path = "crates/orch-plugin", version = "0.0.1" }
 
 arrow = "59"
+# Lo justo de Arrow para un plugin compilado a WASM: sin CSV ni JSON, que
+# sólo engordarían el binario que se carga en cada nodo.
+arrow-array = { version = "59", default-features = false }
+arrow-schema = { version = "59", default-features = false }
+arrow-ipc = { version = "59", default-features = false }
 async-trait = "0.1"
 # DataFusion 55 depende de arrow ^59.2, así que cargo unifica una sola versión
 # de Arrow en todo el workspace. Si se sube `arrow`, hay que subir esto a la vez.
@@ -79,6 +91,22 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
 
 tempfile = "3"
+
+# Plugins WASM (Fase 2.5). El modelo de componentes, con la interfaz en WIT:
+# el plugin puede escribirse en cualquier lenguaje que compile a un
+# componente, y corre aislado, sin más acceso al sistema que el que se le dé.
+wasmtime = { version = "50", default-features = false, features = [
+    "runtime",
+    "cranelift",
+    "component-model",
+    "std",
+    # Compilar un plugin de 2 MB cuesta ~2 s: la caché lo deja en disco y los
+    # arranques siguientes no lo repiten.
+    "cache",
+    "parallel-compilation",
+] }
+wasmtime-wasi = { version = "50", default-features = false, features = ["p2"] }
+wit-bindgen = "0.63"
 
 [profile.release]
 opt-level = 3

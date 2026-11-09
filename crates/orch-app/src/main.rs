@@ -12,7 +12,7 @@ mod events;
 mod state;
 
 use orch_store::Store;
-use state::{default_directory, default_store, full_registry, AppState};
+use state::{default_directory, default_store, AppState};
 
 fn main() {
     tracing_subscriber::fmt()
@@ -33,7 +33,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState::new(full_registry(), store, default_directory()))
+        .manage(AppState::new(store, default_directory()))
         .invoke_handler(tauri::generate_handler![
             commands::workspace,
             commands::set_directory,

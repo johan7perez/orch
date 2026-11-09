@@ -106,7 +106,13 @@ pub async fn workspace(state: State<'_, AppState>) -> Response<Workspace> {
     Ok(Workspace {
         directory: display,
         pipelines,
-        problem: (!found.problems.is_empty()).then(|| found.problems.join("\n")),
+        // Un plugin que no cargó es un problema de la carpeta: los pipelines
+        // que lo usen dirán que no conocen la operación, y esto dice por qué.
+        problem: {
+            let mut problemas = found.problems;
+            problemas.extend(state.plugin_warnings());
+            (!problemas.is_empty()).then(|| problemas.join("\n"))
+        },
     })
 }
 
@@ -122,7 +128,7 @@ fn inspect(state: &AppState, path: &std::path::Path) -> (usize, Option<String>, 
     };
     let description = spec.description.clone();
     let written = spec.nodes.len();
-    orch_core::pushdown::apply(&mut spec, &state.registry);
+    orch_core::pushdown::apply(&mut spec, &state.registry());
     match Dag::build(spec) {
         Ok(dag) => (dag.len(), description, None),
         Err(err) => (written, description, Some(err.to_string())),
@@ -169,7 +175,7 @@ pub async fn run_detail(state: State<'_, AppState>, run_id: String) -> Response<
 #[tauri::command]
 pub async fn start_run(app: AppHandle, state: State<'_, AppState>, path: String) -> Response<()> {
     let path = PathBuf::from(path);
-    let registry = Arc::clone(&state.registry);
+    let registry = state.registry();
     let store = Arc::clone(&state.store);
 
     let mut spec = PipelineSpec::from_path(&path).map_err(fail)?;
@@ -221,27 +227,30 @@ pub struct Catalog {
 pub struct Component {
     pub name: String,
     pub schema: serde_json::Value,
+    /// Viene de un plugin WASM de la carpeta, no con la aplicación.
+    pub plugin: bool,
 }
 
 #[tauri::command]
 pub async fn catalog(state: State<'_, AppState>) -> Response<Catalog> {
+    let registry = state.registry();
     let listar = |kind: &'static str, names: Vec<&str>| -> Vec<Component> {
         names
             .into_iter()
             .map(|name| Component {
-                schema: state
-                    .registry
+                schema: registry
                     .schema(kind, name)
                     .cloned()
                     .unwrap_or(serde_json::Value::Null),
+                plugin: registry.is_dynamic(kind, name),
                 name: name.to_string(),
             })
             .collect()
     };
     Ok(Catalog {
-        sources: listar("source", state.registry.source_names()),
-        transforms: listar("transform", state.registry.transform_names()),
-        sinks: listar("sink", state.registry.sink_names()),
+        sources: listar("source", registry.source_names()),
+        transforms: listar("transform", registry.transform_names()),
+        sinks: listar("sink", registry.sink_names()),
     })
 }
 
@@ -320,6 +329,7 @@ pub async fn edit_pipeline(
 }
 
 fn graph_of(state: &AppState, path: &std::path::Path, texto: &str) -> Response<Graph> {
+    let registry = state.registry();
     let spec =
         PipelineSpec::from_yaml_str_as_written(&path.display().to_string(), texto).map_err(fail)?;
 
@@ -332,7 +342,7 @@ fn graph_of(state: &AppState, path: &std::path::Path, texto: &str) -> Response<G
             component: node.kind.component().to_string(),
             config: node.kind.config().clone(),
             after: node.after.clone(),
-            known: state.registry.has(&node.kind),
+            known: registry.has(&node.kind),
             position: spec.layout.get(&node.id).copied(),
         })
         .collect();
@@ -351,7 +361,7 @@ fn graph_of(state: &AppState, path: &std::path::Path, texto: &str) -> Response<G
     // expandidos. Si falla, es un dato más del grafo, no un error.
     let problem = match PipelineSpec::from_path(path) {
         Ok(mut real) => {
-            orch_core::pushdown::apply(&mut real, &state.registry);
+            orch_core::pushdown::apply(&mut real, &registry);
             Dag::build(real).err().map(|err| err.to_string())
         }
         Err(err) => Some(err.to_string()),
