@@ -42,14 +42,18 @@
   --fondo-elevado: #ffffff;
   --fondo-sutil: rgba(0, 0, 0, 0.035);
   --fondo-hover: rgba(0, 0, 0, 0.045);
-  --fondo-activo: rgba(10, 90, 200, 0.1);
+  --fondo-activo: rgba(51, 85, 244, 0.1);
 
   --texto: #1c1c1e;
   --texto-secundario: #6b6b70;
   --texto-terciario: #9a9aa0;
 
   --separador: rgba(0, 0, 0, 0.08);
-  --acento: #0a5ac8;
+  /* El azul de la marca (`assets/marca`) es también el acento: el logo y la
+     selección no deben ser dos azules distintos. Cada modo usa el tono que
+     la propia marca define para ese fondo. */
+  --marca: #3355f4;
+  --acento: var(--marca);
   --exito: #1a7f37;
   --error: #c0392b;
   --aviso: #9a6700;
@@ -65,14 +69,15 @@
     --fondo-elevado: #2a2a2d;
     --fondo-sutil: rgba(255, 255, 255, 0.045);
     --fondo-hover: rgba(255, 255, 255, 0.06);
-    --fondo-activo: rgba(90, 160, 255, 0.16);
+    --fondo-activo: rgba(110, 133, 247, 0.16);
 
     --texto: #f2f2f4;
     --texto-secundario: #9d9da3;
     --texto-terciario: #6e6e74;
 
     --separador: rgba(255, 255, 255, 0.09);
-    --acento: #5aa0ff;
+    --marca: #6e85f7;
+    --acento: var(--marca);
     --exito: #4ec26e;
     --error: #ff6b5e;
     --aviso: #e3b341;
@@ -134,34 +139,14 @@ button {
   padding: 14px 16px 10px;
 }
 
+/* El logo (`Marca.tsx`): las partes oscuras toman este color, así que en
+   modo oscuro se vuelven claras solas. La altura iguala a la del título de
+   tamaño grande que ocupaba antes este sitio. */
 .marca {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--texto-lg);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.marca__glifo {
-  display: inline-flex;
-  gap: 3px;
-  align-items: center;
-}
-
-.marca__punto {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--acento);
-}
-
-.marca__punto:nth-child(2) {
-  opacity: 0.66;
-}
-
-.marca__punto:nth-child(3) {
-  opacity: 0.4;
+  display: block;
+  height: 22px;
+  width: auto;
+  color: var(--texto);
 }
 
 .pestanas {
@@ -560,6 +545,15 @@ button {
   text-align: center;
   color: var(--texto-terciario);
   gap: 6px;
+}
+
+/* El isotipo del estado vacío va apagado, en el color del texto terciario:
+   acompaña al mensaje, no compite con él. Sólo el nodo conserva el azul. */
+.vacio__marca {
+  justify-self: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 8px;
 }
 
 .seccion {

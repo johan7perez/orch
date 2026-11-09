@@ -8,6 +8,7 @@
 import { useState } from "react";
 
 import type { PipelineInfo } from "../api";
+import { Isotipo } from "../Marca";
 import type { EnCurso } from "../useMotor";
 import { Diseno } from "./Diseno";
 import { EnVivo } from "./EnVivo";
@@ -42,6 +43,7 @@ export function Pipeline({
       <div className="contenido">
         {problema ? <p className="nota nota--error">{problema}</p> : null}
         <div className="vacio">
+          <Isotipo className="vacio__marca" />
           <strong>Elige un pipeline</strong>
           <span>Se ejecuta aquí y verás cada nodo según ocurra.</span>
         </div>

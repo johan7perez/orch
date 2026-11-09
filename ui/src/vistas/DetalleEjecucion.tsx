@@ -1,5 +1,6 @@
 import type { NodeRow, RunDetail, RunSummary } from "../api";
 import { claseDePunto, estadoLegible, fechaHora, hora, miles, milisegundos } from "../formato";
+import { Isotipo } from "../Marca";
 
 interface Props {
   detalle: RunDetail | null;
@@ -10,6 +11,7 @@ export function DetalleEjecucion({ detalle, resumen }: Props) {
   if (!detalle) {
     return (
       <div className="vacio">
+        <Isotipo className="vacio__marca" />
         <strong>Elige una ejecución</strong>
         <span>Verás sus métricas por nodo y todo lo que ocurrió.</span>
       </div>

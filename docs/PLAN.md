@@ -247,8 +247,12 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
   y el frontend sólo pinta eventos.
 - ✅ Verificado conduciendo la ventana real (clic en un pipeline → *Ejecutar*
   → eventos en vivo → cierre), no sólo con tests.
-- ⬜ Iconos de la aplicación provisionales, generados a mano.
-- ⬜ Probado sólo en Windows; falta pasar por macOS y Linux.
+- ✅ Iconos de la aplicación con la marca, generados con `tauri icon` desde
+  `ui/src/assets/marca`. En Linux el de la ventana es el primer PNG de
+  `bundle.icon`, y GTK descarta en silencio uno de 512 px: va primero el de 256.
+- ✅ Probado en Windows y en Linux (Linux Mint 22.3, X11): build completa,
+  tests —los de PostgreSQL contra un servidor real— y la app arrancada.
+- ⬜ Falta pasar por macOS.
 
 ## Fase 2 — Diseñador visual + SDK de conectores 🚧
 

@@ -1,6 +1,7 @@
 import type { RunSummary, Workspace } from "../api";
 import { claseDePunto, fechaHora, milisegundos } from "../formato";
 import type { Pestana } from "../App";
+import { Logo } from "../Marca";
 import type { EnCurso } from "../useMotor";
 
 interface Props {
@@ -29,14 +30,7 @@ export function Lateral({
   return (
     <aside className="lateral">
       <header className="lateral__cabecera">
-        <div className="marca">
-          <span className="marca__glifo" aria-hidden="true">
-            <span className="marca__punto" />
-            <span className="marca__punto" />
-            <span className="marca__punto" />
-          </span>
-          Orch
-        </div>
+        <Logo className="marca" />
       </header>
 
       <div className="pestanas" role="tablist">

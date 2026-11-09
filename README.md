@@ -4,16 +4,23 @@ Plataforma local de orquestación y transporte de datos. La especificación
 completa está en [doc.md](doc.md); el desglose por fases, en
 [docs/PLAN.md](docs/PLAN.md).
 
-**Estado: Fase 0 completa.** Motor de DAG con ejecución en streaming,
-transformaciones SQL sobre DataFusion, conectores CSV/Parquet/PostgreSQL/REST,
-historial en DuckDB y demonio con disparadores cron. Sin UI todavía: eso es
-la Fase 1.
+**Estado: Fases 0 y 1 completas; Fase 2 en curso.** Motor de DAG con
+ejecución en streaming, transformaciones SQL sobre DataFusion, conectores
+CSV/Parquet/PostgreSQL/REST, historial en DuckDB y demonio con disparadores
+cron, más la aplicación de escritorio (Tauri) con el lienzo del pipeline y el
+inspector de config. Lo siguiente es editar el pipeline desde el lienzo
+(Fase 2.3).
 
 ---
 
 ## Requisitos
 
-Rust estable (1.85 o superior) con el toolchain **MSVC**. En Windows:
+Rust estable (1.85 o superior), y Node.js 20.19 o superior para la interfaz
+de la aplicación de escritorio (lo exige Vite 7).
+
+### Windows
+
+Con el toolchain **MSVC**:
 
 ```powershell
 # Build Tools de Visual Studio (requiere elevación; ~4 GB)
@@ -32,6 +39,30 @@ Cierra y reabre la terminal para que `cargo` entre en el `PATH`.
 > `gnullvm` tampoco: espera un `x86_64-w64-mingw32-clang` externo. MSVC es
 > además lo que exigirán Tauri (Fase 1) y DuckDB (Fase 0.4).
 
+### Linux
+
+Probado en Linux Mint 22.3 (base Ubuntu 24.04). Rust con rustup, sin
+privilegios:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Y las bibliotecas del sistema: WebKitGTK y compañía para la ventana de Tauri,
+D-Bus (lo enlaza `tao`) y OpenSSL (`native-tls`, en el conector PostgreSQL,
+que arrastran tanto la CLI como la aplicación):
+
+```bash
+sudo apt install -y build-essential libwebkit2gtk-4.1-dev libgtk-3-dev \
+  libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev \
+  libxdo-dev libdbus-1-dev
+```
+
+El llavero (`${keyring:...}`) habla con Secret Service por `zbus`, en Rust
+puro, así que no necesita paquetes. Sí necesita que la sesión tenga un
+llavero por defecto: si falla con `Object does not exist at path
+…/collection/login`, créalo en *Contraseñas y claves* (Seahorse).
+
 ## Compilar y probar
 
 ```powershell
@@ -46,6 +77,10 @@ cargo fmt --all
 > `STATUS_STACK_BUFFER_OVERRUN`, dejando artefactos a medio escribir en
 > `target/debug/deps` que luego dan `E0786`/`E0460`. Si ya ha pasado, hay que
 > limpiar los crates afectados (`cargo clean -p <crate>`) y recompilar.
+
+Los tests de PostgreSQL y el del llavero **se saltan solos** si no hay
+servidor (`ORCH_TEST_PG_DSN`) o almacén de credenciales, y entonces cuentan
+como aprobados. El aviso sólo se ve con `-- --nocapture`.
 
 ## Uso
 
@@ -73,7 +108,7 @@ cargo run -p orch-cli -- daemon --dir examples/pipelines --keep-days 30
 cargo run -p orch-cli -- run examples/pipelines/csv_to_csv.yaml --format json
 
 # Aplicación de escritorio (la primera vez, `npm --prefix ui install`)
-npx --prefix ui tauri dev --config ../crates/orch-app/tauri.conf.json
+npx --prefix ui tauri dev
 ```
 
 Medir el motor aislado de disco y red (usa `--release`, la diferencia es de
@@ -139,6 +174,26 @@ por peso y color antes que por adornos, modo claro/oscuro siguiendo al
 sistema sin interruptor propio, y movimiento sólo donde comunica algo —el
 latido de un nodo en curso, la entrada de un evento nuevo—, respetando
 `prefers-reduced-motion`.
+
+Con `tauri dev` el proceso arranca en `crates/orch-app`, así que no encuentra
+solo `examples/pipelines`. La carpeta se le indica con `ORCH_PIPELINES` (ruta
+absoluta), o se elige desde el pie del lateral. `ORCH_STORE` apunta al
+historial; si es el mismo `orch.duckdb` que usa la CLI, la aplicación ve
+también sus ejecuciones:
+
+```bash
+ORCH_PIPELINES=$PWD/examples/pipelines ORCH_STORE=$PWD/orch.duckdb \
+  npx --prefix ui tauri dev
+```
+
+La marca vive en `ui/src/assets/marca`. El logo de la interfaz
+(`ui/src/Marca.tsx`) copia sus trazos para seguir al modo claro/oscuro, y el
+azul de la marca es el acento. Los iconos de `crates/orch-app/icons` salen de
+`orch-icono-app.png` con `npx --prefix ui tauri icon`; de lo que genera, sólo
+se guardan los que lista `tauri.conf.json`. El primer PNG de esa lista es el
+icono de la ventana en Linux, y va primero el de 256 px a propósito: con el de
+512 px, GTK lo descarta sin avisar (no cabe en una petición de X11) y la
+ventana se queda sin icono en la barra de tareas.
 
 ### El lienzo
 

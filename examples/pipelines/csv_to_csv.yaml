@@ -2,7 +2,7 @@
 #
 #   cargo run -p orch-cli -- run examples/pipelines/csv_to_csv.yaml --follow
 #
-# Las rutas son relativas al directorio desde el que se lanza `orch`.
+# Las rutas son relativas a la carpeta de este fichero, no a desde dónde se lanza `orch`.
 
 version: 1
 name: clientes-resumen
