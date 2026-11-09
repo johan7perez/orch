@@ -39,6 +39,8 @@ export interface GraphNode {
   after: string[];
   /** `false` si el conector no existe en el registro. */
   known: boolean;
+  /** Dónde lo dejó el usuario, `[x, y]`. Sin esto, el lienzo lo coloca solo. */
+  position: [number, number] | null;
 }
 
 export interface GraphEdge {
@@ -79,7 +81,11 @@ export type Edit =
   /** Sin `value`, el campo se quita y vuelve a su valor por defecto. */
   | { op: "set_config"; node: string; key: string; value?: unknown }
   | { op: "set_after"; node: string; after: string[] }
-  | { op: "rename_node"; from: string; to: string };
+  | { op: "rename_node"; from: string; to: string }
+  /** Se redondea a enteros al escribirlo. */
+  | { op: "set_layout"; positions: Record<string, [number, number]> }
+  /** Borra todas las posiciones: el lienzo vuelve a colocar los nodos solo. */
+  | { op: "clear_layout" };
 
 /** Un componente registrado, con el esquema JSON de su config. */
 export interface Component {

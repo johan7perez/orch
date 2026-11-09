@@ -309,7 +309,7 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
 - ✅ `orch connectors <nombre>`: la misma información para quien escribe el
   YAML a mano.
 
-### 2.3 Edición y escritura del YAML 🚧
+### 2.3 Edición y escritura del YAML ✅
 
 - ✅ Drag-and-drop: crear nodos desde el catálogo (arrastrando o con un clic),
   conectar y desconectar, quitar con Supr. Lo que el motor rechazaría —un
@@ -334,8 +334,16 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
   operaciones sobre cada ejemplo comprobando que el diff toca sólo lo suyo.
   Verificado conduciendo la ventana real: una docena de cambios de ida y
   vuelta dejan el fichero idéntico byte a byte.
-- ⬜ Posiciones de los nodos: hoy se calculan; si se guardan, tienen que ir
-  donde no estorben a quien edita el YAML a mano.
+- ✅ Posiciones de los nodos, en un bloque `layout` al final del propio
+  fichero —el pipeline sigue siendo un único fichero, como con `schedule`—,
+  con un comentario que dice qué es y que se puede borrar. Sólo existe si
+  alguien movió un nodo; al mover el primero se fijan todos, para que los
+  demás no se recoloquen alrededor. Lectura tolerante: una entrada mal
+  escrita se ignora. Quitar o renombrar un nodo arrastra su posición, y un
+  botón de los controles las borra todas.
+- ✅ Con posiciones guardadas, un componente aparece donde se suelta, y si el
+  inspector que se abre lo tapa, el lienzo se desplaza lo justo para que
+  asome.
 
 ### 2.4 Virtualización del lienzo ⬜
 

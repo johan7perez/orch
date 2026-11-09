@@ -3,6 +3,8 @@
 //! El formato en disco es YAML, pero la config de cada nodo se guarda como
 //! `serde_json::Value` para que cada conector deserialice su propio esquema.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -27,6 +29,35 @@ pub struct PipelineSpec {
     pub nodes: Vec<NodeSpec>,
     #[serde(default)]
     pub edges: Vec<EdgeSpec>,
+    /// Dónde dibuja el lienzo cada nodo, `[x, y]`. El motor no lo usa.
+    ///
+    /// Va al final del fichero, lejos de lo que se edita a mano, y sólo existe
+    /// si alguien movió un nodo en el lienzo; sin él, el lienzo los coloca
+    /// solo. La lectura es tolerante: una entrada mal escrita se ignora,
+    /// porque algo cosmético nunca puede impedir ejecutar un pipeline.
+    #[serde(
+        default,
+        deserialize_with = "layout_tolerante",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub layout: BTreeMap<NodeId, [f64; 2]>,
+}
+
+fn layout_tolerante<'de, D>(deserializer: D) -> Result<BTreeMap<NodeId, [f64; 2]>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let crudo = Option::<Value>::deserialize(deserializer)?;
+    let Some(Value::Object(entradas)) = crudo else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(entradas
+        .into_iter()
+        .filter_map(|(id, punto)| match punto.as_array().map(Vec::as_slice) {
+            Some([x, y]) => Some((id, [x.as_f64()?, y.as_f64()?])),
+            _ => None,
+        })
+        .collect())
 }
 
 /// Cuándo arranca un pipeline por su cuenta.

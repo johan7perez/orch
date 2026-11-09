@@ -43,6 +43,8 @@ pub(crate) fn aplicar(texto: &str, edit: &Edit) -> Result<String, EditError> {
             poner_after(texto, node, &lista)
         }
         Edit::RenameNode { from, to } => renombrar(texto, from, to),
+        Edit::SetLayout { positions } => poner_layout(texto, positions),
+        Edit::ClearLayout => quitar_layout(texto),
     }
 }
 
@@ -118,6 +120,7 @@ fn quitar_nodo(texto: &str, id: &str) -> Result<String, EditError> {
             texto = poner_after(&texto, &nodo.id, &resto)?;
         }
     }
+    texto = quitar_de_layout(&texto, id)?;
 
     let (doc, raiz, spec) = abrir(&texto)?;
     let i = indice(&spec, id)?;
@@ -318,7 +321,148 @@ fn renombrar(texto: &str, from: &str, to: &str) -> Result<String, EditError> {
         }
     }
 
+    if let Some(layout) = raiz.get_mapping("layout") {
+        if layout.contains_key(from) {
+            layout.rename_key(from, to);
+        }
+    }
+
     Ok(doc.to_string())
+}
+
+// --- Posiciones --------------------------------------------------------------
+
+/// Cabecera del bloque `layout`. Quien abre el YAML a mano tiene que saber
+/// qué es eso del final y que puede borrarlo sin romper nada.
+const CABECERA_LAYOUT: &str = "\
+# Dónde dibuja cada nodo el lienzo de Orch. El motor no lo usa; si se borra,
+# el lienzo vuelve a colocarlos solo.
+";
+
+fn poner_layout(
+    texto: &str,
+    posiciones: &std::collections::BTreeMap<String, [f64; 2]>,
+) -> Result<String, EditError> {
+    let (doc, raiz, spec) = abrir(texto)?;
+
+    if let Some(layout) = raiz.get_mapping("layout") {
+        // Ya existe: se cambian sus líneas y las que faltan van al final.
+        for (id, &[x, y]) in posiciones {
+            layout.set(id.as_str(), punto(x, y));
+        }
+        return Ok(doc.to_string());
+    }
+    if raiz.contains_key("layout") {
+        // `layout:` vacío o con algo que no es un mapa: se sustituye.
+        let layout = Mapping::new();
+        for (id, &[x, y]) in posiciones {
+            layout.set(id.as_str(), punto(x, y));
+        }
+        raiz.set("layout", layout);
+        return Ok(doc.to_string());
+    }
+
+    // Bloque nuevo al final del fichero, lejos de lo que se edita a mano, y
+    // en el orden de los nodos para que se lea igual que `nodes`.
+    let mut nuevo = texto.to_string();
+    if !nuevo.ends_with('\n') {
+        nuevo.push('\n');
+    }
+    if !nuevo.ends_with("\n\n") {
+        nuevo.push('\n');
+    }
+    nuevo.push_str(CABECERA_LAYOUT);
+    nuevo.push_str("layout:\n");
+    let en_orden = spec
+        .nodes
+        .iter()
+        .filter_map(|n| posiciones.get_key_value(&n.id))
+        .chain(
+            posiciones
+                .iter()
+                .filter(|(id, _)| !spec.nodes.iter().any(|n| &n.id == *id)),
+        );
+    for (id, &[x, y]) in en_orden {
+        nuevo.push_str(&format!(
+            "  {}: [{}, {}]\n",
+            escalar(id),
+            x.round() as i64,
+            y.round() as i64
+        ));
+    }
+    Ok(nuevo)
+}
+
+fn punto(x: f64, y: f64) -> Sequence {
+    let punto = Sequence::new_flow();
+    punto.push(x.round() as i64);
+    punto.push(y.round() as i64);
+    punto
+}
+
+/// Quita la posición de un nodo; si era la última, el bloque entero.
+fn quitar_de_layout(texto: &str, id: &str) -> Result<String, EditError> {
+    let (doc, raiz, _) = abrir(texto)?;
+    let Some(layout) = raiz.get_mapping("layout") else {
+        return Ok(texto.to_string());
+    };
+    if !layout.contains_key(id) {
+        return Ok(texto.to_string());
+    }
+    layout.remove(id);
+    if layout.is_empty() {
+        return quitar_layout(texto);
+    }
+    Ok(doc.to_string())
+}
+
+/// Quita el bloque `layout` entero, con su cabecera.
+///
+/// El bloque lo escribe Orch, así que basta con cortar por líneas: desde los
+/// comentarios pegados encima de `layout:` hasta la primera línea que vuelve
+/// a la columna 0.
+fn quitar_layout(texto: &str) -> Result<String, EditError> {
+    let Some(clave) = texto
+        .match_indices("layout:")
+        .map(|(i, _)| i)
+        .find(|&i| i == 0 || texto.as_bytes()[i - 1] == b'\n')
+    else {
+        // No está escrito como una clave al principio de línea: o no existe,
+        // o tiene una forma rara que mejor resuelve el árbol.
+        let (doc, raiz, _) = abrir(texto)?;
+        if raiz.contains_key("layout") {
+            raiz.remove("layout");
+            return Ok(doc.to_string());
+        }
+        return Ok(texto.to_string());
+    };
+
+    let mut desde = clave;
+    while desde > 0 {
+        let anterior = inicio_de_linea(texto, desde - 1);
+        if texto[anterior..desde].starts_with('#') {
+            desde = anterior;
+        } else {
+            break;
+        }
+    }
+
+    let mut hasta = fin_de_linea(texto, clave);
+    while hasta < texto.len() && texto[hasta..].starts_with([' ', '\t']) {
+        hasta = fin_de_linea(texto, hasta);
+    }
+
+    // La línea en blanco que lo separaba de lo anterior sobra si detrás no
+    // queda nada, o si detrás ya hay otra.
+    if desde >= 2 && &texto[desde - 2..desde] == "\n\n" {
+        let detras_en_blanco =
+            hasta == texto.len() || texto[hasta..fin_de_linea(texto, hasta)].trim().is_empty();
+        if detras_en_blanco {
+            desde -= 1;
+        }
+    }
+
+    Ok(format!("{}{}", &texto[..desde], &texto[hasta..]))
 }
 
 // --- Cortar y pegar por líneas ---------------------------------------------

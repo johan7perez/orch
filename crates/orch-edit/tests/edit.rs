@@ -768,3 +768,123 @@ fn en_todos_los_ejemplos_cada_cambio_toca_solo_lo_suyo() {
         }
     }
 }
+
+// --- Posiciones ----------------------------------------------------------------
+
+fn posiciones(lista: &[(&str, f64, f64)]) -> Edit {
+    Edit::SetLayout {
+        positions: lista
+            .iter()
+            .map(|(id, x, y)| (id.to_string(), [*x, *y]))
+            .collect(),
+    }
+}
+
+const CABECERA: &str = "# Dónde dibuja cada nodo el lienzo de Orch. El motor no lo usa; si se borra,\n# el lienzo vuelve a colocarlos solo.\n";
+
+#[test]
+fn las_posiciones_van_en_un_bloque_al_final_en_el_orden_de_los_nodos() {
+    let nuevo = uno(
+        BASE,
+        posiciones(&[
+            ("escribir", 732.0, 40.0),
+            ("leer", 0.0, 40.4),
+            ("filtrar", 244.6, 40.0),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(
+        nuevo,
+        format!(
+            "{BASE}\n{CABECERA}layout:\n  leer: [0, 40]\n  filtrar: [245, 40]\n  escribir: [732, 40]\n"
+        )
+    );
+    let spec = spec(&nuevo);
+    assert_eq!(spec.layout["filtrar"], [245.0, 40.0]);
+}
+
+#[test]
+fn mover_un_nodo_cambia_solo_su_linea() {
+    let colocado = uno(
+        BASE,
+        posiciones(&[("leer", 0.0, 0.0), ("filtrar", 200.0, 0.0)]),
+    )
+    .unwrap();
+    let movido = uno(&colocado, posiciones(&[("filtrar", 210.0, 30.0)])).unwrap();
+    assert_eq!(
+        movido,
+        cambiar(&colocado, "  filtrar: [200, 0]\n", "  filtrar: [210, 30]\n")
+    );
+}
+
+#[test]
+fn renombrar_y_quitar_arrastran_su_posicion() {
+    let colocado = uno(
+        BASE,
+        posiciones(&[("leer", 0.0, 0.0), ("filtrar", 200.0, 0.0)]),
+    )
+    .unwrap();
+
+    let renombrado = uno(
+        &colocado,
+        Edit::RenameNode {
+            from: "filtrar".into(),
+            to: "filtrados".into(),
+        },
+    )
+    .unwrap();
+    assert!(
+        renombrado.contains("  filtrados: [200, 0]\n"),
+        "{renombrado}"
+    );
+    assert!(!renombrado.contains("  filtrar: ["), "{renombrado}");
+
+    let sin = uno(
+        &colocado,
+        Edit::RemoveNode {
+            id: "filtrar".into(),
+        },
+    )
+    .unwrap();
+    assert!(sin.ends_with("layout:\n  leer: [0, 0]\n"), "{sin}");
+}
+
+#[test]
+fn quitar_la_ultima_posicion_o_borrarlas_deja_el_fichero_como_estaba() {
+    let colocado = uno(
+        BASE,
+        posiciones(&[("leer", 0.0, 0.0), ("escribir", 9.0, 9.0)]),
+    )
+    .unwrap();
+    assert_eq!(uno(&colocado, Edit::ClearLayout).unwrap(), BASE);
+
+    // Quitar los dos nodos con posición se lleva también el bloque.
+    let solo_leer = uno(BASE, posiciones(&[("leer", 0.0, 0.0)])).unwrap();
+    let sin = uno(&solo_leer, Edit::RemoveNode { id: "leer".into() }).unwrap();
+    assert_eq!(
+        sin,
+        uno(BASE, Edit::RemoveNode { id: "leer".into() }).unwrap()
+    );
+}
+
+#[test]
+fn una_posicion_mal_escrita_no_impide_leer_el_pipeline() {
+    let roto = format!("{BASE}layout:\n  leer: [0, 0]\n  filtrar: arriba\n  cruzar: [1]\n");
+    let spec = spec(&roto);
+    assert_eq!(spec.layout.len(), 1);
+    assert_eq!(spec.layout["leer"], [0.0, 0.0]);
+    // Y se puede seguir editando encima.
+    let movido = uno(&roto, posiciones(&[("leer", 5.0, 5.0)])).unwrap();
+    assert!(
+        movido.contains("  leer: [5, 5]\n  filtrar: arriba\n"),
+        "{movido}"
+    );
+}
+
+#[test]
+fn no_se_coloca_un_nodo_que_no_existe() {
+    assert!(matches!(
+        uno(BASE, posiciones(&[("nadie", 0.0, 0.0)])),
+        Err(EditError::Invalid(_))
+    ));
+}

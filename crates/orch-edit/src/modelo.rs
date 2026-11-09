@@ -67,6 +67,7 @@ pub(crate) fn aplicar(antes: &PipelineSpec, edit: &Edit) -> Result<PipelineSpec,
             for nodo in &mut spec.nodes {
                 nodo.after.retain(|previo| previo != id);
             }
+            spec.layout.remove(id);
         }
 
         Edit::Connect { from, to, port } => {
@@ -185,7 +186,24 @@ pub(crate) fn aplicar(antes: &PipelineSpec, edit: &Edit) -> Result<PipelineSpec,
                     }
                 }
             }
+            if let Some(punto) = spec.layout.remove(from) {
+                spec.layout.insert(to.clone(), punto);
+            }
         }
+
+        Edit::SetLayout { positions } => {
+            for (id, [x, y]) in positions {
+                indice(&spec, id)?;
+                if !(x.is_finite() && y.is_finite()) {
+                    return Err(EditError::Invalid(format!(
+                        "la posición de `{id}` no es un número"
+                    )));
+                }
+                spec.layout.insert(id.clone(), [x.round(), y.round()]);
+            }
+        }
+
+        Edit::ClearLayout => spec.layout.clear(),
     }
     Ok(spec)
 }

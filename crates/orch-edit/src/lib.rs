@@ -58,6 +58,13 @@ pub enum Edit {
     SetAfter { node: String, after: Vec<String> },
     /// Cambia el id de un nodo y todo lo que lo nombra.
     RenameNode { from: String, to: String },
+    /// Fija dónde dibuja el lienzo estos nodos, `[x, y]`. Se redondea a
+    /// enteros: medio píxel no le importa a nadie y ensucia el fichero.
+    SetLayout {
+        positions: std::collections::BTreeMap<String, [f64; 2]>,
+    },
+    /// Borra todas las posiciones: el lienzo vuelve a colocar los nodos solo.
+    ClearLayout,
 }
 
 /// Tipo de nodo, como se escribe en `type:`.

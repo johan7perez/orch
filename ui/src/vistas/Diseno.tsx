@@ -15,12 +15,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } fro
 import {
   Background,
   BackgroundVariant,
+  ControlButton,
   Controls,
   ReactFlow,
+  applyNodeChanges,
   type Connection,
   type Edge,
   type Node,
+  type NodeChange,
   type ReactFlowInstance,
+  type XYPosition,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
@@ -32,7 +36,7 @@ import {
   type Graph,
   type PipelineInfo,
 } from "../api";
-import { aristasDe, disponer } from "../lienzo/disposicion";
+import { ALTO_NODO, ANCHO_NODO, aristasDe, disponer } from "../lienzo/disposicion";
 import { NodoPipeline } from "../lienzo/NodoPipeline";
 import { Paleta, type Arrastrado, type TipoNodo } from "../lienzo/Paleta";
 import { Inspector } from "./Inspector";
@@ -52,9 +56,10 @@ const ENCUADRE_CON_INSPECTOR = {
 } as const;
 
 /**
- * Cambios que mueven nodos. El lienzo los coloca solo, así que después de
+ * Cambios que recolocan nodos cuando el lienzo los coloca solo: después de
  * uno de estos lo que estaba a la vista puede haber quedado fuera, o detrás
- * de un panel: se vuelve a encuadrar.
+ * de un panel, y se vuelve a encuadrar. Con las posiciones guardadas no hace
+ * falta —cada nodo sigue donde estaba— salvo al borrarlas.
  */
 const MUEVEN_NODOS = new Set<Edit["op"]>([
   "add_node",
@@ -89,8 +94,13 @@ export function Diseno({ pipeline, onEditado }: Props) {
   // El catálogo se pide una vez: los componentes registrados no cambian
   // mientras la ventana está abierta.
   const [catalogo, setCatalogo] = useState<Catalog | null>(null);
+  // Los nodos tal y como los tiene React Flow: con lo que midió y, mientras
+  // se arrastran, con su posición en vuelo. Se rehacen desde el fichero cada
+  // vez que cambia el grafo.
+  const [nodos, setNodos] = useState<Node[]>([]);
 
   const flujo = useRef<ReactFlowInstance | null>(null);
+  const lienzo = useRef<HTMLDivElement | null>(null);
   const arrastrado = useRef<Arrastrado | null>(null);
   // La revisión vive en una ref además de en `grafo`: un cambio que espera en
   // la cola tiene que usar la del grafo que dejó el anterior, no la que había
@@ -157,7 +167,11 @@ export function Diseno({ pipeline, onEditado }: Props) {
           setError(null);
           despues?.();
           onEditado();
-          if (edits.some((e) => MUEVEN_NODOS.has(e.op))) {
+          const colocado = nuevo.nodes.some((n) => n.position !== null);
+          const recoloca =
+            edits.some((e) => e.op === "clear_layout") ||
+            (!colocado && edits.some((e) => MUEVEN_NODOS.has(e.op)));
+          if (recoloca) {
             // Dos fotogramas: el primero pinta el grafo nuevo y abre o cierra
             // el inspector; el encuadre tiene que saber si está.
             requestAnimationFrame(() =>
@@ -187,14 +201,26 @@ export function Diseno({ pipeline, onEditado }: Props) {
   );
 
   const anadir = useCallback(
-    (tipo: TipoNodo, componente: string) => {
+    (tipo: TipoNodo, componente: string, donde?: XYPosition) => {
       if (!grafo) return;
       const id = idLibre(grafo, tipo, componente);
-      editar([{ op: "add_node", id, kind: tipo, component: componente }], () => {
+      const edits: Edit[] = [{ op: "add_node", id, kind: tipo, component: componente }];
+      // Si el usuario ya colocó los nodos a su gusto, el nuevo se queda donde
+      // lo soltó, o debajo de todo si vino de un clic. Si no, lo coloca el
+      // lienzo como a los demás.
+      if (grafo.nodes.some((n) => n.position !== null)) {
+        const [x, y] = donde ? [donde.x, donde.y] : debajoDeTodo(grafo);
+        edits.push({ op: "set_layout", positions: { [id]: [x, y] } });
+      }
+      editar(edits, () => {
         // Se elige al momento: lo siguiente que hace falta es rellenar su
         // config, y el inspector ya marca lo obligatorio que falta.
         setElegido(id);
         setAristaElegida(null);
+        // El inspector que se abre puede taparlo justo donde se soltó.
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => asomar(flujo.current, lienzo.current, id)),
+        );
       });
     },
     [grafo, editar],
@@ -271,17 +297,67 @@ export function Diseno({ pipeline, onEditado }: Props) {
       arrastrado.current = null;
       if (!soltado) return;
       e.preventDefault();
-      anadir(soltado.tipo, soltado.componente);
+      const punto = flujo.current?.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      // Centrado en el puntero, que es donde el ojo espera verlo aparecer.
+      const donde = punto && { x: punto.x - ANCHO_NODO / 2, y: punto.y - ALTO_NODO / 2 };
+      anadir(soltado.tipo, soltado.componente, donde);
     },
     [anadir],
   );
 
   // `elegido` entra en la construcción: el lienzo es controlado y, sin
   // `onNodesChange`, React Flow descarta su propio estado de selección.
-  const { nodos, aristas } = useMemo(
+  const construido = useMemo(
     () => construir(grafo, elegido, aristaElegida),
     [grafo, elegido, aristaElegida],
   );
+  const aristas = construido.aristas;
+
+  // Las posiciones de verdad son las del fichero: al cambiar el grafo se
+  // rehacen, tanto si la nueva se guardó como si el cambio se rechazó y el
+  // nodo vuelve a su sitio. Lo que React Flow ya midió se conserva: un nodo
+  // sin `measured` se oculta hasta que lo vuelve a medir, y si su tamaño no
+  // cambió, eso puede no ocurrir nunca.
+  useEffect(() => {
+    setNodos((antes) => {
+      const medidas = new Map(antes.map((n) => [n.id, n.measured]));
+      return construido.nodos.map((n) => ({ ...n, measured: medidas.get(n.id) }));
+    });
+  }, [construido.nodos]);
+
+  // De la selección y el borrado se ocupan sus propios manejadores; aquí
+  // entran las medidas y el arrastre.
+  const alCambiarNodos = useCallback((cambios: NodeChange[]) => {
+    const propios = cambios.filter((c) => c.type === "position" || c.type === "dimensions");
+    if (propios.length > 0) setNodos((actuales) => applyNodeChanges(propios, actuales));
+  }, []);
+
+  /**
+   * Al soltar se guarda la posición. La primera vez se guardan las de todos:
+   * si sólo se fijara el movido, los demás seguirían recolocándose solos a su
+   * alrededor con cada cambio, y el dibujo dejaría de tener sentido.
+   */
+  const alSoltarNodo = useCallback(
+    (_: unknown, __: Node, soltados: Node[]) => {
+      if (!grafo) return;
+      const colocado = grafo.nodes.some((n) => n.position !== null);
+      const posiciones: Record<string, [number, number]> = {};
+      if (!colocado) {
+        for (const n of construido.nodos) posiciones[n.id] = [n.position.x, n.position.y];
+      }
+      for (const n of soltados) {
+        const antes = grafo.nodes.find((g) => g.id === n.id)?.position;
+        const ahora: [number, number] = [Math.round(n.position.x), Math.round(n.position.y)];
+        if (!antes || antes[0] !== ahora[0] || antes[1] !== ahora[1]) posiciones[n.id] = ahora;
+      }
+      if (Object.keys(posiciones).length > 0) {
+        editar([{ op: "set_layout", positions: posiciones }]);
+      }
+    },
+    [grafo, construido.nodos, editar],
+  );
+
+  const colocado = grafo?.nodes.some((n) => n.position !== null) ?? false;
 
   const nodoElegido = grafo?.nodes.find((n) => n.id === elegido) ?? null;
   conInspector.current = nodoElegido !== null;
@@ -293,7 +369,7 @@ export function Diseno({ pipeline, onEditado }: Props) {
         <p className="nota nota--error nota--suelta">{grafo.problem}</p>
       ) : null}
 
-      <div className="lienzo" aria-busy={guardando}>
+      <div className="lienzo" aria-busy={guardando} ref={lienzo}>
         <ReactFlow
           nodes={nodos}
           edges={aristas}
@@ -313,6 +389,8 @@ export function Diseno({ pipeline, onEditado }: Props) {
             setElegido(null);
             setAristaElegida(null);
           }}
+          onNodesChange={alCambiarNodos}
+          onNodeDragStop={alSoltarNodo}
           onConnect={conectar}
           isValidConnection={conexionValida}
           onDelete={borrar}
@@ -324,12 +402,27 @@ export function Diseno({ pipeline, onEditado }: Props) {
           minZoom={0.2}
           maxZoom={1.6}
           proOptions={{ hideAttribution: true }}
-          nodesDraggable={false}
+          nodesDraggable
           nodesConnectable
           elementsSelectable
         >
           <Background variant={BackgroundVariant.Dots} gap={18} size={1} />
-          <Controls showInteractive={false} />
+          <Controls showInteractive={false}>
+            {colocado ? (
+              <ControlButton
+                onClick={() => editar([{ op: "clear_layout" }])}
+                title="Colocar los nodos automáticamente (borra las posiciones guardadas)"
+                aria-label="Colocar los nodos automáticamente"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="1" y="2" width="5" height="4" rx="1" />
+                  <rect x="10" y="2" width="5" height="4" rx="1" />
+                  <rect x="10" y="10" width="5" height="4" rx="1" />
+                  <path d="M6 4h4M8 4v8h2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+                </svg>
+              </ControlButton>
+            ) : null}
+          </Controls>
         </ReactFlow>
 
         {catalogo ? (
@@ -366,6 +459,48 @@ export function Diseno({ pipeline, onEditado }: Props) {
 }
 
 /**
+ * Si un nodo quedó debajo de la paleta o del inspector, desplaza el lienzo lo
+ * justo para que asome, sin cambiar el zoom. Con las posiciones guardadas no
+ * se reencuadra todo después de cada cambio, así que esto hace falta.
+ */
+function asomar(rf: ReactFlowInstance | null, contenedor: HTMLElement | null, id: string) {
+  const nodo = rf?.getNode(id);
+  if (!rf || !nodo || !contenedor) return;
+  const caja = contenedor.getBoundingClientRect();
+  const libre = {
+    izquierda: caja.left + 204,
+    derecha: caja.right - 332,
+    arriba: caja.top + 28,
+    abajo: caja.bottom - 28,
+  };
+  const desde = rf.flowToScreenPosition(nodo.position);
+  const hasta = rf.flowToScreenPosition({
+    x: nodo.position.x + ANCHO_NODO,
+    y: nodo.position.y + ALTO_NODO,
+  });
+  const dx =
+    hasta.x > libre.derecha
+      ? hasta.x - libre.derecha
+      : desde.x < libre.izquierda
+        ? desde.x - libre.izquierda
+        : 0;
+  const dy =
+    hasta.y > libre.abajo ? hasta.y - libre.abajo : desde.y < libre.arriba ? desde.y - libre.arriba : 0;
+  if (dx === 0 && dy === 0) return;
+  const { x, y, zoom } = rf.getViewport();
+  void rf.setViewport({ x: x - dx, y: y - dy, zoom }, { duration: 200 });
+}
+
+/** Un hueco para un nodo nuevo añadido con un clic: debajo de todos. */
+function debajoDeTodo(grafo: Graph): [number, number] {
+  const puestos = grafo.nodes.flatMap((n) => (n.position ? [n.position] : []));
+  if (puestos.length === 0) return [0, 0];
+  const x = Math.min(...puestos.map(([px]) => px));
+  const y = Math.max(...puestos.map(([, py]) => py));
+  return [x, y + ALTO_NODO + 28];
+}
+
+/**
  * Un id libre para un nodo nuevo, con la forma de los que escribe la gente:
  * `leer_csv`, `escribir_parquet`, `filter`. Si ya existe, `_2`, `_3`…
  *
@@ -398,7 +533,10 @@ function construir(
   const nodos: Node[] = grafo.nodes.map((nodo) => ({
     id: nodo.id,
     type: "pipeline",
-    position: colocados.get(nodo.id) ?? { x: 0, y: 0 },
+    // Lo que el usuario colocó manda; lo demás lo coloca el lienzo.
+    position: nodo.position
+      ? { x: nodo.position[0], y: nodo.position[1] }
+      : (colocados.get(nodo.id) ?? { x: 0, y: 0 }),
     data: {
       etiqueta: nodo.id,
       componente: nodo.component,
@@ -412,7 +550,6 @@ function construir(
       salidas: nodo.kind !== "sink" || todas.some((a) => a.from === nodo.id) ? 1 : 0,
     },
     selected: nodo.id === elegido,
-    draggable: false,
   }));
 
   const aristas: Edge<DatosArista>[] = todas.map((arista, i) => {

@@ -260,6 +260,9 @@ pub struct GraphNode {
     /// `false` si el componente no está registrado. El lienzo lo marca en vez
     /// de dibujarlo como si fuera válido.
     pub known: bool,
+    /// Dónde lo dejó el usuario en el lienzo, si lo movió alguna vez. Sin
+    /// esto, el lienzo lo coloca solo.
+    pub position: Option<[f64; 2]>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -330,6 +333,7 @@ fn graph_of(state: &AppState, path: &std::path::Path, texto: &str) -> Response<G
             config: node.kind.config().clone(),
             after: node.after.clone(),
             known: state.registry.has(&node.kind),
+            position: spec.layout.get(&node.id).copied(),
         })
         .collect();
 

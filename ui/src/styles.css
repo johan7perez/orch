@@ -1119,6 +1119,15 @@ select.control {
   background: var(--fondo-activo);
 }
 
+/* Arrastrar le da el foco: el anillo sólo tiene sentido con el teclado. */
+.paleta__item:focus {
+  outline: none;
+}
+
+.paleta__item:focus-visible {
+  box-shadow: 0 0 0 2px var(--acento);
+}
+
 .paleta__glifo {
   font-size: 10px;
   flex: none;

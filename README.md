@@ -8,9 +8,9 @@ completa está en [doc.md](doc.md); el desglose por fases, en
 ejecución en streaming, transformaciones SQL sobre DataFusion, conectores
 CSV/Parquet/PostgreSQL/REST, historial en DuckDB y demonio con disparadores
 cron, más la aplicación de escritorio (Tauri) con el lienzo del pipeline, que
-ya edita: añadir, conectar, configurar y quitar nodos escribe el YAML tocando
-sólo lo que cambia. Lo siguiente es guardar las posiciones de los nodos, que
-cierra la Fase 2.3.
+ya edita: añadir, conectar, configurar, colocar y quitar nodos escribe el YAML
+tocando sólo lo que cambia. Lo siguiente es virtualizar el lienzo para
+pipelines de cientos de nodos (Fase 2.4).
 
 ---
 
@@ -235,6 +235,25 @@ ejecutar.
   vuelve a su valor por defecto. Las listas se escriben separadas por comas
   y los mapas, una línea `clave: valor` por entrada.
 - **Renombrar:** clic en el id, arriba del inspector.
+- **Colocar:** arrastra los nodos. Al mover el primero se guardan las
+  posiciones de todos —si sólo se fijara ese, los demás se seguirían
+  recolocando solos a su alrededor—, y desde entonces un componente nuevo
+  aparece donde lo sueltas. El botón de cuadrícula de los controles borra las
+  posiciones y el lienzo vuelve a colocarlos solo.
+
+Las posiciones van en un bloque `layout` al final del fichero, lejos de lo que
+se edita a mano y con un comentario que explica qué es:
+
+```yaml
+# Dónde dibuja cada nodo el lienzo de Orch. El motor no lo usa; si se borra,
+# el lienzo vuelve a colocarlos solo.
+layout:
+  leer_clientes: [0, 0]
+  pagados: [244, 261]
+```
+
+El motor lo ignora, y su lectura es tolerante: una entrada mal escrita se
+descarta, porque algo cosmético nunca puede impedir ejecutar un pipeline.
 
 Lo que garantiza:
 
@@ -590,7 +609,5 @@ también hace usable el ciclo de desarrollo.
   origen aguas arriba; espiarlos en paralelo está pendiente.
 - **`aggregate` y `ORDER BY` rompen el streaming**: acumulan estado en
   memoria. Usa `memory_limit_mb` en esos nodos.
-- **El lienzo todavía no guarda posiciones.** Los nodos se colocan solos y se
-  recolocan después de cada cambio; arrastrarlos no está habilitado.
 - **No hay deshacer en el lienzo.** Cada cambio se escribe al momento en el
   fichero, así que lo que haya en git es la red de seguridad.
