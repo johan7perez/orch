@@ -100,7 +100,12 @@ abierto se fue concretando así; el detalle de cada fase está en
   un `select` pegado a un origen que sabe resolverlo (PostgreSQL, Parquet) se
   absorbe en él, sin acoplar el motor a DataFusion.
 - **Programación en el propio fichero.** El bloque `schedule` vive con el
-  pipeline, y un demonio vigila la carpeta.
+  pipeline, y un demonio vigila la carpeta. Las alertas, igual: un bloque
+  `alerts` con lo que hay que vigilar y adónde avisar.
+- **Lineage estático, por columna.** Se calcula del pipeline sin ejecutarlo,
+  por el mismo camino que los esquemas, y distingue las columnas cuyo valor
+  llega a la salida de las que sólo deciden qué filas pasan: sin las
+  segundas, el análisis de impacto no vería la clave de un join.
 
 Y en qué quedaron los riesgos:
 

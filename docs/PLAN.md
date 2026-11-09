@@ -432,7 +432,7 @@ tarda 17–64 ms en release (150–540 ms en debug).
 - ⬜ Plugins más pequeños (hoy ~2,4 MB, casi todo Arrow IPC y serde) y probar
   el contrato desde otro lenguaje.
 
-## Fase 3 — Monitoreo avanzado 🚧
+## Fase 3 — Monitoreo avanzado ✅
 
 ### 3.1 Throughput por nodo en tiempo real ✅
 
@@ -492,9 +492,41 @@ tarda 17–64 ms en release (150–540 ms en debug).
   siempre con el texto, nunca sólo el color.
 - ⬜ Notificación del sistema en la aplicación (hoy, dentro de la ventana).
 
-### 3.3 Lineage de datos a nivel de columna ⬜
+### 3.3 Lineage de datos a nivel de columna ✅
 
-- ⬜ Para cada columna de salida, de qué columnas de origen viene.
+- ✅ Para cada columna de salida, de qué columnas de origen viene, y para
+  cada columna de un origen, a qué salidas llega. Sin leer datos: va por el
+  mismo camino que los esquemas de `validate`. Cada transformación declara un
+  solo salto (método `lineage` del trait `Transform`, opcional como `plan`) y
+  el ejecutor los encadena en orden topológico (`Executor::lineage`).
+- ✅ Cómo llega el valor: copiado (también renombrado), calculado fila a fila
+  o agregado. Encadenar pasos se queda con el más fuerte.
+- ✅ **Directo e indirecto.** Las columnas que sólo deciden qué filas pasan o
+  en qué orden (`where`, claves de join, `GROUP BY`, `ORDER BY`) se cuentan
+  aparte. Salió al pensar en el análisis de impacto: la clave de un join no
+  llega a ninguna columna de salida, pero quitarla rompe el pipeline. Una
+  columna puede ser las dos cosas a la vez (`SELECT * … WHERE status = …`).
+- ✅ SQL sobre el plan lógico **sin optimizar** de DataFusion, el más fiel a
+  lo escrito, que en la versión 55 ya trae el `*` expandido: proyecciones,
+  filtros, agregados, joins de todos los tipos, `UNION`, CTE, ventanas,
+  `DISTINCT ON` y subconsultas escalares. Lo que no sabe seguir (`UNNEST`,
+  consultas recursivas) sale como `incierta`, sin inventar orígenes.
+- ✅ Donde no se puede saber, lo dice: un nodo sin esquema declarado (un
+  origen cuyo fichero aún no existe, un plugin) corta la cadena y todo lo de
+  detrás indica en qué nodo se cortó.
+- ✅ `orch lineage <pipeline>` (lo que escribe cada salida) y `--node <id>`
+  (desde un origen: adónde llega cada columna y dónde se usa), también en
+  JSON. Sin pushdown: habla de los nodos tal y como están escritos.
+- ✅ Aplicación: sección *Columnas* en el inspector, con tipo y origen de
+  cada columna, y en un origen su impacto. Cada referencia salta a ese nodo en
+  el lienzo. Se pide al abrir el inspector, una vez por versión del fichero:
+  los orígenes miran su esquema y eso no puede frenar el dibujo del lienzo.
+- ✅ Tests de punta a punta con los pipelines de ejemplo (`join.yaml`,
+  `sql_resumen.yaml`), copias y renombres, fan-in, SQL variado, y los dos
+  cortes de cadena: un origen sin esquema y una transformación que no declara
+  su lineage.
+- ⬜ Lineage entre pipelines: hoy se para en el origen, aunque lea un fichero
+  que escribe otro pipeline (o un sink del mismo).
 
 ## Fase 4 — Escalabilidad ⬜
 

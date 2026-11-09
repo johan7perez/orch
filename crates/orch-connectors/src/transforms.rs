@@ -5,7 +5,9 @@
 //! transformaciones con expresiones viven en `orch-sql`, sobre DataFusion.
 //!
 //! Las tres resuelven su esquema de salida en `validate`, así que una columna
-//! mal escrita se detecta antes de leer un solo dato.
+//! mal escrita se detecta antes de leer un solo dato. Y las tres sólo copian:
+//! su lineage es que cada columna sale de la del mismo nombre (o del nombre
+//! viejo, en `rename`) en la entrada.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -13,7 +15,10 @@ use std::sync::Arc;
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use orch_core::{Input, InputSchemas, NodeContext, OrchError, Output, Registry, Result, Transform};
+use orch_core::{
+    ColumnDerivation, Input, InputSchemas, NodeContext, OrchError, Output, Registry, Result,
+    StepLineage, Transform,
+};
 use serde::Deserialize;
 
 pub fn register(registry: &mut Registry) {
@@ -104,6 +109,21 @@ impl Transform for Select {
         Ok(Some(Arc::new(schema.project(&indices)?)))
     }
 
+    async fn lineage(&self, inputs: &InputSchemas) -> Result<Option<StepLineage>> {
+        if inputs.concatenated(&self.node)?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(StepLineage {
+            columns: self
+                .config
+                .columns
+                .iter()
+                .map(|c| ColumnDerivation::copy_of(inputs, c, c))
+                .collect(),
+            indirect: Vec::new(),
+        }))
+    }
+
     async fn apply(&self, _ctx: &NodeContext, input: &mut Input, output: &Output) -> Result<()> {
         if self.config.columns.is_empty() {
             return Err(OrchError::config(
@@ -188,6 +208,23 @@ impl Transform for Rename {
         }
     }
 
+    async fn lineage(&self, inputs: &InputSchemas) -> Result<Option<StepLineage>> {
+        let Some(schema) = inputs.concatenated(&self.node)? else {
+            return Ok(None);
+        };
+        Ok(Some(StepLineage {
+            columns: schema
+                .fields()
+                .iter()
+                .map(|f| {
+                    let nuevo = self.config.columns.get(f.name()).unwrap_or(f.name());
+                    ColumnDerivation::copy_of(inputs, f.name(), nuevo)
+                })
+                .collect(),
+            indirect: Vec::new(),
+        }))
+    }
+
     async fn apply(&self, _ctx: &NodeContext, input: &mut Input, output: &Output) -> Result<()> {
         let mut renamed_schema = None;
 
@@ -236,6 +273,13 @@ impl Transform for Limit {
     /// Recortar filas no cambia las columnas.
     async fn plan(&self, inputs: &InputSchemas) -> Result<Option<SchemaRef>> {
         inputs.concatenated(&self.node)
+    }
+
+    async fn lineage(&self, inputs: &InputSchemas) -> Result<Option<StepLineage>> {
+        Ok(inputs.concatenated(&self.node)?.map(|schema| StepLineage {
+            columns: ColumnDerivation::passthrough(inputs, &schema),
+            indirect: Vec::new(),
+        }))
     }
 
     async fn apply(&self, _ctx: &NodeContext, input: &mut Input, output: &Output) -> Result<()> {

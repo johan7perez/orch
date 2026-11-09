@@ -15,6 +15,7 @@
 //! Queda pendiente de medir antes de decidir; ver `docs/PLAN.md`.
 
 mod engine;
+mod lineage;
 mod table;
 mod transforms;
 

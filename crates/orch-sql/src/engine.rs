@@ -1,5 +1,6 @@
 //! Ejecución de una query de DataFusion sobre los flujos de un nodo.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
@@ -10,10 +11,13 @@ use datafusion::datasource::MemTable;
 use datafusion::error::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::streaming::PartitionStream;
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::prelude::{DataFrame, SessionConfig, SessionContext};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use orch_core::{Input, InputPort, InputSchemas, NodeContext, OrchError, Output, Result};
+use orch_core::{
+    ColumnDerivation, Derivation, Input, InputColumn, InputPort, InputSchemas, NodeContext,
+    OrchError, Output, Result, StepLineage,
+};
 use tokio::sync::mpsc;
 
 use crate::table::{BatchResult, InputPartition};
@@ -103,6 +107,68 @@ impl Plan {
     /// Es lo que convierte una columna inexistente en un error de `validate`.
     /// Devuelve el esquema de salida.
     pub(crate) async fn plan_schema(&self, inputs: &InputSchemas) -> Result<Option<SchemaRef>> {
+        Ok(self
+            .frame(inputs)
+            .await?
+            .map(|frame| Arc::new(frame.schema().as_arrow().clone())))
+    }
+
+    /// Para cada columna del resultado, de qué columnas de entrada sale.
+    pub(crate) async fn lineage(&self, inputs: &InputSchemas) -> Result<Option<StepLineage>> {
+        let Some(frame) = self.frame(inputs).await? else {
+            return Ok(None);
+        };
+
+        // En la query, una entrada se llama por su puerto o, si es la única,
+        // también por `table`. El lineage se da por puerto.
+        let single = inputs.len() == 1;
+        let puertos: HashMap<String, &str> = inputs
+            .ports()
+            .iter()
+            .flat_map(|p| {
+                self.table_names(&p.port, single)
+                    .into_iter()
+                    .map(move |nombre| (nombre, p.port.as_str()))
+            })
+            .collect();
+        let a_puerto = |(tabla, columna): &(String, String)| {
+            puertos
+                .get(tabla)
+                .map(|puerto| InputColumn::new(*puerto, columna))
+        };
+
+        let query = crate::lineage::de_plan(frame.logical_plan());
+        let columns = frame
+            .schema()
+            .fields()
+            .iter()
+            .zip(query.columnas)
+            .map(|(campo, rastro)| {
+                let inputs: Vec<InputColumn> =
+                    rastro.columnas.iter().filter_map(a_puerto).collect();
+                // Una tabla que no es ninguna entrada no debería poder
+                // aparecer; si aparece, no se finge saber de dónde viene.
+                let derivation = if inputs.len() == rastro.columnas.len() {
+                    rastro.derivacion
+                } else {
+                    Derivation::Unknown
+                };
+                ColumnDerivation {
+                    column: campo.name().clone(),
+                    inputs,
+                    derivation,
+                }
+            })
+            .collect();
+        Ok(Some(StepLineage {
+            columns,
+            indirect: query.indirectas.iter().filter_map(a_puerto).collect(),
+        }))
+    }
+
+    /// La query planificada sobre tablas vacías con el esquema de cada
+    /// entrada. `None` si alguna entrada no lo declara.
+    async fn frame(&self, inputs: &InputSchemas) -> Result<Option<DataFrame>> {
         if !inputs.all_known() {
             return Ok(None);
         }
@@ -118,12 +184,11 @@ impl Plan {
             }
         }
 
-        let frame = self
-            .session
+        self.session
             .sql(&self.query)
             .await
-            .map_err(|e| self.error("la query no se pudo planificar", e))?;
-        Ok(Some(Arc::new(frame.schema().as_arrow().clone())))
+            .map(Some)
+            .map_err(|e| self.error("la query no se pudo planificar", e))
     }
 }
 

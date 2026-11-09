@@ -14,7 +14,9 @@ use std::collections::BTreeMap;
 
 use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
-use orch_core::{Input, InputSchemas, NodeContext, OrchError, Output, Result, Transform};
+use orch_core::{
+    Input, InputSchemas, NodeContext, OrchError, Output, Result, StepLineage, Transform,
+};
 use serde::Deserialize;
 
 use crate::engine::{self, Plan};
@@ -77,6 +79,10 @@ impl Transform for SqlTransform {
             )));
         }
         self.plan.plan_schema(inputs).await
+    }
+
+    async fn lineage(&self, inputs: &InputSchemas) -> Result<Option<StepLineage>> {
+        self.plan.lineage(inputs).await
     }
 
     async fn apply(&self, ctx: &NodeContext, input: &mut Input, output: &Output) -> Result<()> {

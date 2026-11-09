@@ -4,14 +4,16 @@ Plataforma local de orquestación y transporte de datos. La especificación
 completa está en [doc.md](doc.md); el desglose por fases, en
 [docs/PLAN.md](docs/PLAN.md).
 
-**Estado: Fases 0, 1 y 2 completas.** Motor de DAG con ejecución en
+**Estado: Fases 0 a 3 completas.** Motor de DAG con ejecución en
 streaming, transformaciones SQL sobre DataFusion, conectores
 CSV/Parquet/PostgreSQL/REST, historial en DuckDB y demonio con disparadores
 cron, más la aplicación de escritorio (Tauri) con el lienzo del pipeline, que
 edita el YAML tocando sólo lo que cambia y aguanta pipelines de cientos de
 nodos. Las transformaciones de terceros llegan como plugins de WebAssembly,
-aislados y con un SDK en Rust. Lo siguiente es el monitoreo avanzado
-(Fase 3).
+aislados y con un SDK en Rust. El monitoreo enseña el ritmo de cada nodo en
+vivo, avisa si un pipeline falla, se cuelga o va lento, y dice de qué
+columnas de origen sale cada columna de salida. Lo siguiente es la
+escalabilidad (Fase 4).
 
 ---
 
@@ -117,6 +119,9 @@ cargo run -p orch-cli -- validate examples/pipelines/csv_to_csv.yaml
 
 # Estructura del pipeline
 cargo run -p orch-cli -- graph examples/pipelines/csv_to_csv.yaml
+
+# De qué columnas de origen sale cada columna de salida
+cargo run -p orch-cli -- lineage examples/pipelines/join.yaml
 
 # Ejecutar, con eventos en vivo
 cargo run -p orch-cli -- run examples/pipelines/csv_to_csv.yaml --follow
@@ -553,6 +558,64 @@ config:
     # verify: false               # o desactivarlo, a sabiendas
 ```
 
+## Lineage por columna
+
+Para cada columna de salida, de qué columnas de origen sale; y para cada
+columna de un origen, adónde llega. Se calcula sin leer datos, por el mismo
+camino que los esquemas de `validate`:
+
+```sh
+# Lo que escribe cada salida y de dónde sale
+cargo run -p orch-cli -- lineage examples/pipelines/join.yaml
+
+# Desde un origen: a qué salidas llega cada columna y dónde se usa
+cargo run -p orch-cli -- lineage examples/pipelines/join.yaml --node leer_pedidos
+```
+
+```
+pedidos-por-cliente · de dónde sale lo que escribe cada salida
+
+escribir [sink:csv] · 4 columnas
+  ciudad     Utf8     ← leer_clientes.city
+  clientes   Int64    ← leer_clientes.id      agregada
+  pedidos    Int64    no lee ninguna columna  agregada
+  facturado  Float64  ← leer_pedidos.amount   agregada
+
+Además se leen para filtrar, unir, agrupar u ordenar:
+  pagados  leer_pedidos.status
+  cruzar   leer_clientes.city, leer_clientes.id, leer_pedidos.amount, leer_pedidos.customer_id
+```
+
+```
+leer_pedidos [source:csv] · 4 columnas
+  order_id     Int64    no llega a ninguna salida
+  customer_id  Int64    no llega a ninguna salida · se usa en cruzar
+  amount       Float64  → escribir.facturado · se usa en cruzar
+  status       Utf8     no llega a ninguna salida · se usa en pagados
+```
+
+- **Cómo llega el valor:** copiado (tal cual o con otro nombre; es lo normal
+  y no se dice), *calculado* fila a fila o *agregado*. Encadenar pasos se
+  queda con el más fuerte: el redondeo de la suma de una columna calculada
+  es una columna agregada.
+- **Directo e indirecto.** Las columnas que sólo deciden qué filas pasan o
+  en qué orden —el `where`, la clave de un join, el `GROUP BY`, el `ORDER
+  BY`— no son origen de ninguna columna, pero se listan aparte. Sin eso el
+  análisis de impacto mentiría: `customer_id` no llega a ninguna salida, y
+  quitarla rompe el join.
+- **Con SQL dentro.** Los nodos `sql`, `filter`, `derive` y `aggregate` se
+  siguen sobre el plan lógico de DataFusion: joins, `UNION`, CTE, ventanas y
+  subconsultas escalares. Lo que no sabe seguir sale como *incierta*, sin
+  inventar orígenes.
+- **Donde no se puede saber, lo dice.** Un nodo que no declara su esquema
+  —un origen cuyo fichero aún no existe, un plugin— corta la cadena, y lo
+  que va detrás dice en qué nodo se cortó.
+
+En la aplicación, el inspector de cada nodo tiene una sección *Columnas* con
+el tipo y el origen de cada una; en un origen, adónde llega cada columna. Cada
+referencia es un botón que salta a ese nodo en el lienzo. `--format json` da
+lo mismo para otras herramientas.
+
 ## Plugins WASM
 
 Lo que Orch no trae se puede añadir como plugin: una transformación escrita en
@@ -819,6 +882,8 @@ también hace usable el ciclo de desarrollo.
   fichero, así que lo que haya en git es la red de seguridad.
 - **Las alertas no llegan como notificación del sistema.** En la aplicación
   se ven dentro de la ventana; para enterarse con ella cerrada, el webhook.
+- **El lineage se para en los orígenes.** Si un origen lee un fichero que
+  escribe otro pipeline (o un sink del mismo), no se sigue hasta allí.
 - **Los plugins sólo pueden ser transformaciones.** Un origen o un destino
   necesitan red o disco, y darles ese acceso a un plugin pide decidir antes
   cómo se conceden los permisos.

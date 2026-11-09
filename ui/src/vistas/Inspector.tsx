@@ -16,12 +16,17 @@
 import { useRef, useState, type KeyboardEvent } from "react";
 
 import type { Edit, EsquemaCampo, EsquemaObjeto, GraphNode } from "../api";
+import { Columnas, type Linaje } from "./Columnas";
 
 interface Props {
   nodo: GraphNode;
   esquema: EsquemaObjeto | null;
   /** Los demás nodos: los candidatos para `after`. */
   otros: string[];
+  /** De dónde sale cada columna; `null` mientras no se ha pedido. */
+  linaje: Linaje | null;
+  /** Elige otro nodo en el lienzo: lo que hace pulsar en un origen. */
+  onIrA: (id: string) => void;
   onEditar: (edits: Edit[]) => void;
   onRenombrar: (nuevo: string) => void;
   onEliminar: () => void;
@@ -32,6 +37,8 @@ export function Inspector({
   nodo,
   esquema,
   otros,
+  linaje,
+  onIrA,
   onEditar,
   onRenombrar,
   onEliminar,
@@ -124,6 +131,8 @@ export function Inspector({
         <p className="campo__ayuda">
           No arranca hasta que estos terminen. Ordena, pero no les pasa datos.
         </p>
+
+        {linaje ? <Columnas nodo={nodo.id} linaje={linaje} onIrA={onIrA} /> : null}
       </div>
     </aside>
   );

@@ -1,6 +1,8 @@
 //! Salida legible de la CLI.
 
-use orch_core::{Dag, NodeStatus, Pushed, Registry, RunReport};
+use orch_core::{
+    Dag, Derivation, NodeColumn, NodeLineage, NodeStatus, Pushed, Registry, RunReport,
+};
 
 pub fn print_registry(registry: &Registry) {
     print_list(
@@ -100,6 +102,189 @@ pub fn print_graph(dag: &Dag) {
             println!("    ↻ hasta {} intentos", node.retry.max_attempts);
         }
     }
+}
+
+/// El lineage de un pipeline: sin nodo, lo que escribe cada sink; con un
+/// origen, adónde llega cada una de sus columnas.
+pub fn print_lineage(dag: &Dag, lineage: &[NodeLineage], node: Option<&str>) {
+    let cabecera = |l: &NodeLineage| {
+        let componente = dag
+            .index_of(&l.node)
+            .map(|i| dag.node(i).kind.component().to_string())
+            .unwrap_or_default();
+        let columnas = match &l.columns {
+            Some(c) if c.len() == 1 => " · 1 columna".to_string(),
+            Some(c) => format!(" · {} columnas", c.len()),
+            None => String::new(),
+        };
+        println!("{} [{}:{componente}]{columnas}", l.node, l.kind);
+    };
+
+    if let Some(id) = node {
+        let Some(elegido) = lineage.iter().find(|l| l.node == id) else {
+            return;
+        };
+        cabecera(elegido);
+        match &elegido.columns {
+            None => print_unknown(dag, elegido),
+            Some(_) if elegido.kind == "source" => print_impact(lineage, elegido),
+            Some(_) => {
+                print_columns(elegido);
+                if !elegido.indirect.is_empty() {
+                    println!();
+                    println!(
+                        "Además lee, para filtrar, unir, agrupar u ordenar: {}",
+                        lista(&elegido.indirect)
+                    );
+                }
+            }
+        }
+        return;
+    }
+
+    let spec = dag.spec();
+    println!("{} · de dónde sale lo que escribe cada salida", spec.name);
+    for sink in lineage.iter().filter(|l| l.kind == "sink") {
+        println!();
+        cabecera(sink);
+        match &sink.columns {
+            Some(_) => print_columns(sink),
+            None => print_unknown(dag, sink),
+        }
+    }
+    print_indirect(lineage);
+}
+
+fn print_columns(nodo: &NodeLineage) {
+    let columnas = nodo.columns.as_deref().unwrap_or_default();
+    let origenes: Vec<String> = columnas
+        .iter()
+        .map(|c| {
+            if c.origins.is_empty() {
+                "no lee ninguna columna".to_string()
+            } else {
+                format!("← {}", lista(&c.origins))
+            }
+        })
+        .collect();
+    let ancho = |f: &dyn Fn(usize) -> usize| (0..columnas.len()).map(f).max().unwrap_or(0);
+    let nombre = ancho(&|i| columnas[i].column.chars().count());
+    let tipo = ancho(&|i| columnas[i].data_type.chars().count());
+    let origen = ancho(&|i| origenes[i].chars().count());
+
+    for (c, o) in columnas.iter().zip(&origenes) {
+        // Lo normal es copiar: sólo se dice cuando no.
+        let como = match c.derivation {
+            Derivation::Copy => "",
+            otra => otra.label(),
+        };
+        let linea = format!(
+            "  {:nombre$}  {:tipo$}  {:origen$}  {como}",
+            c.column, c.data_type, o
+        );
+        println!("{}", linea.trim_end());
+    }
+}
+
+/// Lo que leen los nodos para filtrar, unir, agrupar u ordenar.
+fn print_indirect(nodos: &[NodeLineage]) {
+    let con: Vec<&NodeLineage> = nodos.iter().filter(|n| !n.indirect.is_empty()).collect();
+    if con.is_empty() {
+        return;
+    }
+    println!();
+    println!("Además se leen para filtrar, unir, agrupar u ordenar:");
+    let ancho = con
+        .iter()
+        .map(|n| n.node.chars().count())
+        .max()
+        .unwrap_or(0);
+    for n in con {
+        println!("  {:ancho$}  {}", n.node, lista(&n.indirect));
+    }
+}
+
+/// Las columnas de un origen y lo que pasa con cada una.
+fn print_impact(todo: &[NodeLineage], origen: &NodeLineage) {
+    let columnas = origen.columns.as_deref().unwrap_or_default();
+    let nombre = columnas
+        .iter()
+        .map(|c| c.column.chars().count())
+        .max()
+        .unwrap_or(0);
+    let tipo = columnas
+        .iter()
+        .map(|c| c.data_type.chars().count())
+        .max()
+        .unwrap_or(0);
+    for c in columnas {
+        let impacto = orch_core::lineage::impact(
+            todo,
+            &NodeColumn {
+                node: origen.node.clone(),
+                column: c.column.clone(),
+            },
+        );
+        let mut partes = Vec::new();
+        if impacto.outputs.is_empty() {
+            partes.push("no llega a ninguna salida".to_string());
+        } else {
+            partes.push(format!("→ {}", lista(&impacto.outputs)));
+        }
+        if !impacto.used_by.is_empty() {
+            partes.push(format!("se usa en {}", impacto.used_by.join(", ")));
+        }
+        println!(
+            "  {:nombre$}  {:tipo$}  {}",
+            c.column,
+            c.data_type,
+            partes.join(" · ")
+        );
+    }
+
+    // Si hay salidas que no se pueden seguir, «no llega» no es seguro.
+    let inciertas: Vec<&str> = todo
+        .iter()
+        .filter(|l| l.kind == "sink" && l.columns.is_none())
+        .map(|l| l.node.as_str())
+        .collect();
+    if !inciertas.is_empty() {
+        println!();
+        println!(
+            "Sin contar {}: no se sabe qué escribe{} sin ejecutar.",
+            inciertas.join(", "),
+            if inciertas.len() == 1 { "" } else { "n" }
+        );
+    }
+}
+
+fn print_unknown(dag: &Dag, nodo: &NodeLineage) {
+    let Some(corte) = nodo.unknown_at.as_deref() else {
+        return;
+    };
+    // La pista depende de qué clase de nodo cortó la cadena.
+    let pista = match dag.index_of(corte).map(|i| &dag.node(i).kind) {
+        Some(orch_core::NodeKind::Source { .. }) => {
+            "un origen que no pudo leer su esquema (¿el fichero aún no existe, o la base de datos \
+             no responde?)"
+        }
+        _ => {
+            "una transformación que no declara de dónde salen sus columnas (un plugin, por ejemplo)"
+        }
+    };
+    if corte == nodo.node {
+        println!("  no se sabe sin ejecutar: `{corte}` es {pista}");
+    } else {
+        println!("  no se sabe sin ejecutar: la cadena se corta en `{corte}`, {pista}");
+    }
+}
+
+fn lista(columnas: &[NodeColumn]) -> String {
+    columnas
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn print_run(report: &RunReport) {

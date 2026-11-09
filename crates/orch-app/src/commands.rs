@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use orch_core::{Dag, Executor, PipelineSpec};
+use orch_core::{Dag, Executor, NodeLineage, PipelineSpec};
 use orch_store::{AlertRow, EventRow, NodeRow, ProgressRow, RunSummary};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -345,6 +345,22 @@ pub async fn edit_pipeline(
     let path = PathBuf::from(path);
     let texto = orch_edit::edit_file(&path, &revision, &edits).map_err(fail)?;
     graph_of(&state, &path, &texto)
+}
+
+/// De qué columnas de origen sale cada columna de cada nodo.
+///
+/// Va aparte del grafo y se pide sólo al abrir el inspector: para saberlo,
+/// los orígenes miran su esquema —abren el CSV, preguntan a PostgreSQL— y eso
+/// no puede frenar el dibujo del lienzo ni cada edición. Sin pushdown, como
+/// el lienzo: habla de los nodos que se ven.
+#[tauri::command]
+pub async fn pipeline_lineage(
+    state: State<'_, AppState>,
+    path: String,
+) -> Response<Vec<NodeLineage>> {
+    let registry = state.registry();
+    let dag = Dag::build(PipelineSpec::from_path(&path).map_err(fail)?).map_err(fail)?;
+    Executor::new(registry).lineage(&dag).await.map_err(fail)
 }
 
 fn graph_of(state: &AppState, path: &std::path::Path, texto: &str) -> Response<Graph> {

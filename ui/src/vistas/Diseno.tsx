@@ -49,6 +49,7 @@ import { ALTO_NODO, ANCHO_NODO, aristasDe, disponer } from "../lienzo/disposicio
 import { MEDIR, Medidor, alRenderizar, medidas } from "../lienzo/Medidor";
 import { NodoPipeline } from "../lienzo/NodoPipeline";
 import { Paleta, type Arrastrado, type TipoNodo } from "../lienzo/Paleta";
+import type { Linaje } from "./Columnas";
 import { Inspector } from "./Inspector";
 
 const TIPOS_DE_NODO = { pipeline: NodoPipeline };
@@ -124,6 +125,11 @@ export function Diseno({ pipeline, onEditado }: Props) {
   // Dónde van los nodos mientras se arrastran. El lienzo es controlado: sin
   // esto no se moverían hasta que el motor escribiera la posición al soltar.
   const [arrastrando, setArrastrando] = useState<Record<string, XYPosition>>({});
+  // De dónde sale cada columna. Se pide al abrir el inspector y otra vez
+  // cada vez que cambia el fichero, no con cada grafo: para saberlo, los
+  // orígenes abren su CSV o preguntan a su base de datos.
+  const [linaje, setLinaje] = useState<(Linaje & { clave: string }) | null>(null);
+  const linajePedido = useRef<string | null>(null);
 
   const flujo = useRef<Instancia | null>(null);
   const lienzo = useRef<HTMLDivElement | null>(null);
@@ -451,6 +457,40 @@ export function Diseno({ pipeline, onEditado }: Props) {
   const nodoElegido = grafo?.nodes.find((n) => n.id === elegido) ?? null;
   conInspector.current = nodoElegido !== null;
 
+  const hayInspector = nodoElegido !== null;
+  const revisionActual = grafo?.revision ?? null;
+  useEffect(() => {
+    if (!hayInspector || revisionActual === null) return;
+    const path = pipeline.path;
+    const clave = `${path}#${revisionActual}`;
+    if (linajePedido.current === clave) return;
+    linajePedido.current = clave;
+    setLinaje((actual) => ({
+      clave,
+      // Mientras llega lo nuevo se sigue viendo lo anterior del mismo
+      // pipeline: editar un campo no debe hacer parpadear la sección.
+      nodos: actual?.clave.startsWith(`${path}#`) ? actual.nodos : null,
+      error: null,
+      cargando: true,
+    }));
+    // Sólo cuenta la respuesta a la última petición: una lenta que llega
+    // tarde no pisa a la que la sustituyó.
+    const llegada = (resto: Omit<Linaje, "cargando">) =>
+      setLinaje((actual) =>
+        actual?.clave === clave ? { clave, ...resto, cargando: false } : actual,
+      );
+    api.pipelineLineage(path).then(
+      (nodos) => llegada({ nodos, error: null }),
+      (e) => llegada({ nodos: null, error: String(e) }),
+    );
+  }, [hayInspector, revisionActual, pipeline.path]);
+
+  const irA = useCallback((id: string) => {
+    setElegido(id);
+    setAristaElegida(null);
+    requestAnimationFrame(() => asomar(flujo.current, lienzo.current, id));
+  }, []);
+
   return (
     <>
       {error ? <p className="nota nota--error nota--suelta">{error}</p> : null}
@@ -543,6 +583,8 @@ export function Diseno({ pipeline, onEditado }: Props) {
             nodo={nodoElegido}
             esquema={esquemaDe(catalogo, nodoElegido.kind, nodoElegido.component)}
             otros={grafo.nodes.map((n) => n.id).filter((id) => id !== nodoElegido.id)}
+            linaje={linaje}
+            onIrA={irA}
             onEditar={(edits) => editar(edits)}
             onRenombrar={(nuevo) =>
               editar([{ op: "rename_node", from: nodoElegido.id, to: nuevo }], () =>

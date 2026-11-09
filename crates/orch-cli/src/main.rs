@@ -42,6 +42,19 @@ enum Command {
     Validate { pipeline: PathBuf },
     /// Muestra la estructura del pipeline sin ejecutarlo.
     Graph { pipeline: PathBuf },
+    /// De qué columnas de origen sale cada columna de salida.
+    ///
+    /// Sin `--node`, enseña lo que escribe cada sink. Con un origen, a qué
+    /// salidas llega cada una de sus columnas y dónde se usa: lo que se
+    /// rompe si cambia. No lee datos, pero los orígenes miran su esquema.
+    Lineage {
+        pipeline: PathBuf,
+        /// Nodo del que enseñar las columnas.
+        #[arg(long)]
+        node: Option<String>,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
     /// Ejecuta el pipeline.
     Run {
         pipeline: PathBuf,
@@ -170,6 +183,7 @@ fn carpeta_base(command: &Command) -> Option<PathBuf> {
     };
     match command {
         Command::Validate { pipeline } | Command::Graph { pipeline } => Some(carpeta_de(pipeline)),
+        Command::Lineage { pipeline, .. } => Some(carpeta_de(pipeline)),
         Command::Run { pipeline, .. } => Some(carpeta_de(pipeline)),
         Command::Daemon { dir, .. } => Some(dir.clone()),
         Command::Connectors { .. } => Some(PathBuf::from(".")),
@@ -268,6 +282,37 @@ async fn dispatch(
                 dag.spec().edges.len()
             );
             report::print_pushdown(&pushed);
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Lineage {
+            pipeline,
+            node,
+            format,
+        } => {
+            // Sin pushdown: el lineage habla de los nodos tal y como están
+            // escritos, no de los que quedan tras absorber un `select`.
+            let dag = Dag::build(PipelineSpec::from_path(&pipeline)?)?;
+            if let Some(id) = &node {
+                if dag.index_of(id).is_none() {
+                    let ids: Vec<&str> = dag.nodes().iter().map(|n| n.id.as_str()).collect();
+                    return Err(orch_core::OrchError::Other(format!(
+                        "el pipeline no tiene ningún nodo `{id}` (tiene: {})",
+                        ids.join(", ")
+                    )));
+                }
+            }
+            let lineage = Executor::new(registry).lineage(&dag).await?;
+            match format {
+                Format::Text => report::print_lineage(&dag, &lineage, node.as_deref()),
+                Format::Json => {
+                    let elegidos: Vec<&orch_core::NodeLineage> = lineage
+                        .iter()
+                        .filter(|l| node.as_ref().is_none_or(|id| &l.node == id))
+                        .collect();
+                    println!("{}", to_json(&elegidos)?);
+                }
+            }
             Ok(ExitCode::SUCCESS)
         }
 

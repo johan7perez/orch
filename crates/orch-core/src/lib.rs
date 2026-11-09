@@ -28,6 +28,7 @@ pub mod error;
 pub mod event;
 pub mod executor;
 pub mod io;
+pub mod lineage;
 pub mod pushdown;
 pub mod registry;
 pub mod schema;
@@ -40,6 +41,10 @@ pub use error::{parse_config, NoConfig, OrchError, Result};
 pub use event::{NodeProgress, RunEvent};
 pub use executor::{Executor, NodeReport, NodeStatus, RunReport, PROGRESS_EVERY};
 pub use io::{Input, InputPort, IoStats, NodeSignal, Output, Probe};
+pub use lineage::{
+    ColumnDerivation, ColumnLineage, Derivation, Impact, InputColumn, NodeColumn, NodeLineage,
+    StepLineage,
+};
 pub use pushdown::{PushdownOp, Pushed};
 pub use registry::Registry;
 pub use schema::{InputSchemas, PortSchema};

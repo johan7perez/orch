@@ -19,6 +19,7 @@ use crate::dag::Dag;
 use crate::error::{OrchError, Result};
 use crate::event::{NodeProgress, RunEvent, EVENT_CHANNEL_CAPACITY};
 use crate::io::{batch_channel, Input, IoStats, NodeSignal, Output, Probe};
+use crate::lineage::{self, ColumnDerivation, NodeLineage, StepLineage};
 use crate::registry::Registry;
 use crate::schema::{InputSchemas, PortSchema};
 use crate::spec::{NodeKind, RetryPolicy};
@@ -106,6 +107,81 @@ impl Executor {
     pub async fn prepare(&self, dag: &Dag) -> Result<Vec<InputSchemas>> {
         let runners = self.build_runners(dag)?;
         plan_schemas(dag, &runners).await
+    }
+
+    /// Para cada nodo, de qué columnas de origen sale cada una de sus
+    /// columnas, en el orden de `dag.nodes()`.
+    ///
+    /// Construye los conectores y propaga los esquemas igual que
+    /// [`prepare`](Self::prepare), así que falla por lo mismo que `orch
+    /// validate`. No lee datos, pero los orígenes sí miran su esquema: la
+    /// cabecera de un CSV, el pie de un Parquet, la query en PostgreSQL.
+    pub async fn lineage(&self, dag: &Dag) -> Result<Vec<NodeLineage>> {
+        let runners = self.build_runners(dag)?;
+        let (inputs, produced) = propagate(dag, &runners).await?;
+        let mut resolved: Vec<Option<NodeLineage>> = vec![None; dag.len()];
+
+        for &i in dag.topological_order() {
+            let id = dag.node(i).id.as_str();
+            let kind = dag.node(i).kind.label();
+
+            if let Runner::Source(_) = &runners[i] {
+                resolved[i] = Some(match &produced[i] {
+                    Some(schema) => lineage::of_source(id, schema),
+                    None => NodeLineage::unknown(id, kind, id),
+                });
+                continue;
+            }
+
+            // Si alguna entrada ya no se sabe, este nodo tampoco: la cadena
+            // se cortó antes, y se dice dónde.
+            let upstream: Vec<(&String, &NodeLineage)> = dag
+                .upstream_ports(i)
+                .iter()
+                .zip(dag.upstream(i))
+                .map(|(port, &from)| {
+                    let done = resolved[from]
+                        .as_ref()
+                        .expect("el orden topológico resuelve antes las entradas");
+                    (port, done)
+                })
+                .collect();
+            if let Some((_, cut)) = upstream.iter().find(|(_, l)| l.columns.is_none()) {
+                let at = cut.unknown_at.as_deref().unwrap_or(&cut.node);
+                resolved[i] = Some(NodeLineage::unknown(id, kind, at));
+                continue;
+            }
+
+            // Un sink escribe lo que le llega, apilado si son varias entradas.
+            let written = match &runners[i] {
+                Runner::Sink(_) => inputs[i].concatenated(id).ok().flatten(),
+                _ => None,
+            };
+            let step = match &runners[i] {
+                Runner::Transform(transform) => transform.lineage(&inputs[i]).await?,
+                Runner::Sink(_) => written.as_ref().map(|schema| StepLineage {
+                    columns: ColumnDerivation::passthrough(&inputs[i], schema),
+                    indirect: Vec::new(),
+                }),
+                Runner::Source(_) => unreachable!("los orígenes se resuelven arriba"),
+            };
+
+            resolved[i] = Some(match step {
+                Some(step) => lineage::resolve(
+                    id,
+                    kind,
+                    step,
+                    &upstream.into_iter().map(|(p, l)| (p.clone(), l)).collect(),
+                    written.as_deref().or(produced[i].as_deref()),
+                ),
+                None => NodeLineage::unknown(id, kind, id),
+            });
+        }
+
+        Ok(resolved
+            .into_iter()
+            .map(|l| l.expect("el orden topológico pasa por todos los nodos"))
+            .collect())
     }
 
     fn build_runners(&self, dag: &Dag) -> Result<Vec<Runner>> {
@@ -515,6 +591,14 @@ async fn execute_node(
 /// un nodo detecta al ver sus entradas: una columna que no existe, un fan-in
 /// con esquemas incompatibles o un `filter` con dos entradas.
 async fn plan_schemas(dag: &Dag, runners: &[Runner]) -> Result<Vec<InputSchemas>> {
+    Ok(propagate(dag, runners).await?.0)
+}
+
+/// Lo mismo que [`plan_schemas`], devolviendo además lo que produce cada nodo.
+async fn propagate(
+    dag: &Dag,
+    runners: &[Runner],
+) -> Result<(Vec<InputSchemas>, Vec<Option<arrow::datatypes::SchemaRef>>)> {
     let n = dag.len();
     let mut produced: Vec<Option<arrow::datatypes::SchemaRef>> = vec![None; n];
     let mut inputs: Vec<InputSchemas> = vec![InputSchemas::default(); n];
@@ -548,7 +632,7 @@ async fn plan_schemas(dag: &Dag, runners: &[Runner]) -> Result<Vec<InputSchemas>
         );
     }
 
-    Ok(inputs)
+    Ok((inputs, produced))
 }
 
 fn unzip3<A, B, C>(items: Vec<(A, B, C)>) -> (Vec<A>, Vec<B>, Vec<C>) {

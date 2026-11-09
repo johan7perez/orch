@@ -17,6 +17,7 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::io::{Input, Output};
+use crate::lineage::StepLineage;
 use crate::schema::InputSchemas;
 use crate::spec::RunSettings;
 
@@ -61,6 +62,18 @@ pub trait Transform: Send + Sync {
     /// Es el sitio donde una transformación rechaza una entrada que no sabe
     /// manejar (dos flujos donde espera uno) o una columna que no existe.
     async fn plan(&self, inputs: &InputSchemas) -> Result<Option<SchemaRef>> {
+        let _ = inputs;
+        Ok(None)
+    }
+
+    /// Para cada columna que produce, de qué columnas de sus entradas sale.
+    ///
+    /// Un solo salto: el ejecutor encadena los de todos los nodos hasta los
+    /// orígenes. Se llama después de [`plan`](Self::plan) con las mismas
+    /// entradas, y sólo para enseñar el lineage, nunca al ejecutar. Como en
+    /// `plan`, lo que no se sabe es `None`: una transformación que no lo
+    /// implementa corta ahí el lineage sin invalidar nada.
+    async fn lineage(&self, inputs: &InputSchemas) -> Result<Option<StepLineage>> {
         let _ = inputs;
         Ok(None)
     }

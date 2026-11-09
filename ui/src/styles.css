@@ -1074,6 +1074,133 @@ select.control {
   color: var(--texto);
 }
 
+/* --- Columnas del nodo: el lineage --- */
+
+.seccion__cuenta {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.columnas {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.columna {
+  padding: 7px 0;
+  border-top: 1px solid var(--separador);
+}
+
+.columna:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.columna__cabecera {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.columna__nombre {
+  font-family: var(--fuente-mono);
+  font-size: var(--texto-sm);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* Copiar es lo normal y no se dice; lo demás, sí, en segundo plano. */
+.columna__como {
+  font-size: var(--texto-xs);
+  color: var(--texto-secundario);
+}
+
+.columna__como--incierta {
+  color: var(--aviso);
+}
+
+.columna__tipo {
+  margin-left: auto;
+  font-family: var(--fuente-mono);
+  font-size: var(--texto-xs);
+  color: var(--texto-terciario);
+  white-space: nowrap;
+}
+
+.columna__refs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.columna__flecha {
+  font-size: var(--texto-xs);
+  color: var(--texto-terciario);
+}
+
+.columna__nada {
+  margin: 3px 0 0;
+  font-size: var(--texto-xs);
+  color: var(--texto-terciario);
+}
+
+.columnas__nota {
+  margin-top: 10px;
+}
+
+/* Una referencia a otro nodo: pulsarla lo elige en el lienzo. Es bloque y
+   no flex para que «nodo.» y «columna» vayan pegados. */
+.ficha--enlace {
+  display: inline-block;
+  max-width: 100%;
+  border: none;
+  padding: 2px 8px;
+  color: var(--texto);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: background var(--transicion), color var(--transicion);
+}
+
+.ficha--enlace:hover {
+  background: var(--fondo-activo);
+  color: var(--acento);
+}
+
+.ficha--enlace:focus-visible,
+.enlace:focus-visible {
+  outline: 2px solid var(--acento);
+  outline-offset: 1px;
+}
+
+.ficha__nodo {
+  color: var(--texto-secundario);
+}
+
+.ficha--enlace:hover .ficha__nodo {
+  color: inherit;
+}
+
+/* Un id de nodo dentro de una frase. */
+.enlace {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-family: var(--fuente-mono);
+  color: var(--acento);
+  cursor: pointer;
+}
+
+.enlace:hover {
+  text-decoration: underline;
+}
+
 /* --- Paleta de componentes --- */
 
 .paleta {

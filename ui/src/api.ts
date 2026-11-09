@@ -243,6 +243,36 @@ export type RunEvent =
   /** Cada 250 ms mientras la ejecución sigue viva: contadores acumulados. */
   | { event: "progress"; run_id: string; elapsed_ms: number; nodes: NodeProgress[] };
 
+/** Qué le pasa al valor de una columna por el camino, de menos a más. */
+export type Derivacion = "copy" | "computed" | "aggregated" | "unknown";
+
+/** Una columna de un nodo: de un origen, o de un sink al que llega. */
+export interface NodeColumn {
+  node: string;
+  column: string;
+}
+
+export interface ColumnLineage {
+  column: string;
+  /** Tipo Arrow (`Int64`, `Utf8`…). */
+  data_type: string;
+  /** De qué columnas de los orígenes sale. Vacía: no lee ninguna. */
+  origins: NodeColumn[];
+  derivation: Derivacion;
+}
+
+/** El lineage de un nodo, tal y como lo calcula el motor. */
+export interface NodeLineage {
+  node: string;
+  kind: "source" | "transform" | "sink";
+  /** `null` si no se puede saber sin ejecutar. */
+  columns: ColumnLineage[] | null;
+  /** Lo que lee para filtrar, unir, agrupar u ordenar, sin pasarlo a su salida. */
+  indirect: NodeColumn[];
+  /** Si no se sabe, dónde se cortó la cadena. */
+  unknown_at: string | null;
+}
+
 export interface IoStats {
   rows: number;
   batches: number;
@@ -260,6 +290,7 @@ export const api = {
   editPipeline: (path: string, revision: string, edits: Edit[]) =>
     invoke<Graph>("edit_pipeline", { path, revision, edits }),
   catalog: () => invoke<Catalog>("catalog"),
+  pipelineLineage: (path: string) => invoke<NodeLineage[]>("pipeline_lineage", { path }),
 };
 
 /** Se engancha al flujo de eventos del motor. */
