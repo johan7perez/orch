@@ -91,10 +91,7 @@ pub async fn workspace(state: State<'_, AppState>) -> Response<Workspace> {
     for entry in found.entries {
         // Se valida cada uno por separado: que uno esté roto no puede
         // esconder los demás.
-        let (nodes, description, problem) = match inspect(&state, &entry.path) {
-            Ok((nodes, description)) => (nodes, description, None),
-            Err(err) => (0, None, Some(err)),
-        };
+        let (nodes, description, problem) = inspect(&state, &entry.path);
         pipelines.push(PipelineInfo {
             name: entry.name.clone(),
             path: entry.path.display().to_string(),
@@ -113,15 +110,23 @@ pub async fn workspace(state: State<'_, AppState>) -> Response<Workspace> {
     })
 }
 
-fn inspect(
-    state: &AppState,
-    path: &std::path::Path,
-) -> std::result::Result<(usize, Option<String>), String> {
-    let mut spec = PipelineSpec::from_path(path).map_err(fail)?;
+/// Nodos, descripción y, si no valida, el motivo.
+///
+/// Un pipeline que no valida conserva su descripción y su número de nodos:
+/// mientras se edita en el lienzo, pasar por estados intermedios no válidos
+/// es lo normal, y la barra no debe quedarse diciendo «0 nodos».
+fn inspect(state: &AppState, path: &std::path::Path) -> (usize, Option<String>, Option<String>) {
+    let mut spec = match PipelineSpec::from_path(path) {
+        Ok(spec) => spec,
+        Err(err) => return (0, None, Some(err.to_string())),
+    };
     let description = spec.description.clone();
+    let written = spec.nodes.len();
     orch_core::pushdown::apply(&mut spec, &state.registry);
-    let dag = Dag::build(spec).map_err(fail)?;
-    Ok((dag.len(), description))
+    match Dag::build(spec) {
+        Ok(dag) => (dag.len(), description, None),
+        Err(err) => (written, description, Some(err.to_string())),
+    }
 }
 
 /// Cambia el directorio que se está mirando.
@@ -274,6 +279,9 @@ pub struct Graph {
     /// Por qué no valida, si no valida. El grafo se devuelve igual: se dibuja
     /// para poder arreglarlo.
     pub problem: Option<String>,
+    /// Huella del texto que se dibujó. La UI la devuelve al editar: si el
+    /// fichero cambió por debajo, el cambio se rechaza en vez de pisarlo.
+    pub revision: String,
 }
 
 /// El grafo de un pipeline, para dibujarlo.
@@ -284,7 +292,33 @@ pub struct Graph {
 #[tauri::command]
 pub async fn pipeline_graph(state: State<'_, AppState>, path: String) -> Response<Graph> {
     let path = PathBuf::from(path);
-    let spec = PipelineSpec::from_path_as_written(&path).map_err(fail)?;
+    // Se lee una vez: la revisión tiene que ser la del mismo texto que se
+    // dibuja, no la de una segunda lectura.
+    let texto = std::fs::read_to_string(&path)
+        .map_err(|err| format!("no se pudo leer `{}`: {err}", path.display()))?;
+    graph_of(&state, &path, &texto)
+}
+
+/// Aplica cambios del lienzo al fichero y devuelve el grafo resultante.
+///
+/// `revision` es la del grafo sobre el que el usuario hizo el cambio. Si el
+/// fichero ya no es ese —se editó a mano, se hizo un checkout— no se toca, y
+/// la UI recarga.
+#[tauri::command]
+pub async fn edit_pipeline(
+    state: State<'_, AppState>,
+    path: String,
+    revision: String,
+    edits: Vec<orch_edit::Edit>,
+) -> Response<Graph> {
+    let path = PathBuf::from(path);
+    let texto = orch_edit::edit_file(&path, &revision, &edits).map_err(fail)?;
+    graph_of(&state, &path, &texto)
+}
+
+fn graph_of(state: &AppState, path: &std::path::Path, texto: &str) -> Response<Graph> {
+    let spec =
+        PipelineSpec::from_yaml_str_as_written(&path.display().to_string(), texto).map_err(fail)?;
 
     let nodes = spec
         .nodes
@@ -311,7 +345,7 @@ pub async fn pipeline_graph(state: State<'_, AppState>, path: String) -> Respons
 
     // La validación se hace sobre una carga de verdad: con los secretos
     // expandidos. Si falla, es un dato más del grafo, no un error.
-    let problem = match PipelineSpec::from_path(&path) {
+    let problem = match PipelineSpec::from_path(path) {
         Ok(mut real) => {
             orch_core::pushdown::apply(&mut real, &state.registry);
             Dag::build(real).err().map(|err| err.to_string())
@@ -325,5 +359,6 @@ pub async fn pipeline_graph(state: State<'_, AppState>, path: String) -> Respons
         nodes,
         edges,
         problem,
+        revision: orch_edit::revision(texto),
     })
 }

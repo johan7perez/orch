@@ -8,6 +8,7 @@ members = [
     "crates/orch-postgres",
     "crates/orch-store",
     "crates/orch-schedule",
+    "crates/orch-edit",
     "crates/orch-cli",
     "crates/orch-app",
 ]
@@ -27,6 +28,7 @@ orch-rest = { path = "crates/orch-rest", version = "0.0.1" }
 orch-postgres = { path = "crates/orch-postgres", version = "0.0.1" }
 orch-store = { path = "crates/orch-store", version = "0.0.1" }
 orch-schedule = { path = "crates/orch-schedule", version = "0.0.1" }
+orch-edit = { path = "crates/orch-edit", version = "0.0.1" }
 
 arrow = "59"
 async-trait = "0.1"
@@ -67,6 +69,9 @@ serde_json = "1"
 # definición, imposible que se desincronicen.
 schemars = "1"
 serde_yaml = "0.9"
+# Árbol sintáctico sin pérdidas: el editor del lienzo toca sólo lo que cambia y
+# deja comentarios y formato del YAML como estaban.
+yaml-edit = { version = "0.3.6", default-features = false }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1"

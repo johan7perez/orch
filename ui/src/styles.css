@@ -846,7 +846,14 @@ button {
 /* Un campo que nadie escribió: se ve, con su valor por defecto, pero en
    segundo plano. Saber qué se puede poner vale tanto como ver qué hay. */
 .campo--ausente {
-  opacity: 0.55;
+  opacity: 0.6;
+  transition: opacity var(--transicion);
+}
+
+/* Al ir a escribir en él deja de estar en segundo plano. */
+.campo--ausente:hover,
+.campo--ausente:focus-within {
+  opacity: 1;
 }
 
 .campo__nombre {
@@ -878,4 +885,264 @@ button {
   color: var(--texto-secundario);
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+/* Restaura un campo a su valor por defecto quitándolo del fichero. */
+.campo__quitar {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--texto-terciario);
+  font-size: var(--texto-xs);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+  transition: background var(--transicion), color var(--transicion);
+}
+
+.campo__quitar:hover {
+  background: var(--fondo-hover);
+  color: var(--texto);
+}
+
+.campo__error {
+  margin: 2px 0 0;
+  font-size: var(--texto-xs);
+  color: var(--error);
+}
+
+/* --- Controles de edición --- */
+
+.control {
+  width: 100%;
+  margin-top: 3px;
+  padding: 5px 8px;
+  border: 1px solid var(--separador);
+  border-radius: 6px;
+  background: var(--fondo-sutil);
+  color: var(--texto);
+  font-family: var(--fuente-mono);
+  font-size: var(--texto-xs);
+  line-height: 1.5;
+  transition: border-color var(--transicion), box-shadow var(--transicion),
+    background var(--transicion);
+}
+
+.control::placeholder {
+  color: var(--texto-terciario);
+}
+
+.control:focus {
+  outline: none;
+  border-color: var(--acento);
+  background: var(--fondo-panel);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--acento) 18%, transparent);
+}
+
+textarea.control {
+  resize: vertical;
+  /* Una query se lee con sus saltos de línea, no partida a lo ancho. */
+  white-space: pre;
+  overflow-x: auto;
+}
+
+select.control {
+  font-family: var(--fuente);
+  cursor: pointer;
+}
+
+.control--pequeno {
+  width: auto;
+  margin-top: 0;
+  padding: 2px 6px;
+}
+
+.control--mal,
+.control--mal:focus {
+  border-color: var(--error);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--error) 15%, transparent);
+}
+
+.interruptor {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: var(--texto-xs);
+  color: var(--texto-secundario);
+  cursor: pointer;
+}
+
+.interruptor input {
+  accent-color: var(--acento);
+  margin: 0;
+}
+
+/* --- Cabecera del inspector --- */
+
+/* El id se renombra haciendo clic: parece un título hasta que lo tocas. */
+.inspector__titulo--boton {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--texto);
+  text-align: left;
+  cursor: text;
+  border-radius: 4px;
+}
+
+.inspector__titulo--boton:hover {
+  text-decoration: underline dotted var(--texto-terciario);
+  text-underline-offset: 3px;
+}
+
+.inspector__nombre {
+  margin-top: 0;
+  font-family: var(--fuente);
+  font-size: var(--texto-md);
+  font-weight: 600;
+}
+
+/* Destructiva, pero sin gritar: texto rojo, sin relleno. */
+.inspector__accion {
+  margin-left: auto;
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--error);
+  font-size: var(--texto-xs);
+  font-weight: 500;
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 5px;
+  transition: background var(--transicion);
+}
+
+.inspector__accion:hover {
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+
+.inspector__accion + .inspector__cerrar {
+  margin-left: 0;
+}
+
+/* --- Esperas `after` --- */
+
+.esperas {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ficha {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 999px;
+  background: var(--fondo-sutil);
+  font-family: var(--fuente-mono);
+  font-size: var(--texto-xs);
+}
+
+.ficha__quitar {
+  border: none;
+  background: transparent;
+  color: var(--texto-terciario);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 999px;
+}
+
+.ficha__quitar:hover {
+  background: var(--fondo-hover);
+  color: var(--texto);
+}
+
+/* --- Paleta de componentes --- */
+
+.paleta {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 168px;
+  /* Deja sitio abajo a los controles de zoom. */
+  max-height: calc(100% - 150px);
+  overflow-y: auto;
+  padding: 8px 6px;
+  border-radius: var(--radio-lg);
+  background: var(--fondo-panel);
+  box-shadow: var(--sombra);
+}
+
+.paleta__grupo + .paleta__grupo {
+  margin-top: 8px;
+}
+
+.paleta__titulo {
+  margin: 2px 8px 4px;
+  font-size: var(--texto-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--texto-terciario);
+}
+
+.paleta__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--texto);
+  font-size: var(--texto-sm);
+  text-align: left;
+  cursor: grab;
+  transition: background var(--transicion);
+}
+
+.paleta__item:hover {
+  background: var(--fondo-hover);
+}
+
+.paleta__item:active {
+  cursor: grabbing;
+  background: var(--fondo-activo);
+}
+
+.paleta__glifo {
+  font-size: 10px;
+  flex: none;
+}
+
+/* El mismo código de color que el borde de los nodos. */
+.paleta__item--source .paleta__glifo {
+  color: var(--acento);
+}
+
+.paleta__item--transform .paleta__glifo {
+  color: var(--aviso);
+}
+
+.paleta__item--sink .paleta__glifo {
+  color: var(--exito);
+}
+
+.lienzo[aria-busy="true"] {
+  cursor: progress;
+}
+
+/* Una arista elegida, para que se vea qué borra Supr. */
+.lienzo .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--acento);
+  stroke-width: 2;
 }

@@ -22,6 +22,8 @@ interface Props {
   cargando: boolean;
   problema: string | null;
   onEjecutar: (ruta: string, nombre: string) => void;
+  /** El lienzo cambió el fichero: la lista del lateral tiene que enterarse. */
+  onEditado: () => void;
 }
 
 export function Pipeline({
@@ -31,6 +33,7 @@ export function Pipeline({
   cargando,
   problema,
   onEjecutar,
+  onEditado,
 }: Props) {
   const [modo, setModo] = useState<Modo>("vivo");
 
@@ -95,7 +98,7 @@ export function Pipeline({
       {modo === "vivo" ? (
         <EnVivo pipeline={pipeline} enCurso={enCurso} error={error} problema={problema} />
       ) : (
-        <Diseno pipeline={pipeline} />
+        <Diseno pipeline={pipeline} onEditado={onEditado} />
       )}
     </>
   );

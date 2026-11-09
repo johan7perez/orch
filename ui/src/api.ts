@@ -54,7 +54,32 @@ export interface Graph {
   edges: GraphEdge[];
   /** Por qué no valida, si no valida. El grafo se dibuja igual. */
   problem: string | null;
+  /**
+   * Huella del texto que se dibujó. Se devuelve al editar: si el fichero
+   * cambió por debajo, el motor rechaza el cambio en vez de pisarlo.
+   */
+  revision: string;
 }
+
+/**
+ * Un cambio sobre el pipeline. El motor lo aplica al YAML tocando sólo lo que
+ * cambia: los comentarios y el formato del fichero se quedan como estaban.
+ */
+export type Edit =
+  | {
+      op: "add_node";
+      id: string;
+      kind: "source" | "transform" | "sink";
+      component: string;
+      config?: Record<string, unknown>;
+    }
+  | { op: "remove_node"; id: string }
+  | { op: "connect"; from: string; to: string; port?: string }
+  | { op: "disconnect"; from: string; to: string }
+  /** Sin `value`, el campo se quita y vuelve a su valor por defecto. */
+  | { op: "set_config"; node: string; key: string; value?: unknown }
+  | { op: "set_after"; node: string; after: string[] }
+  | { op: "rename_node"; from: string; to: string };
 
 /** Un componente registrado, con el esquema JSON de su config. */
 export interface Component {
@@ -81,6 +106,15 @@ export interface EsquemaCampo {
   description?: string;
   default?: unknown;
   enum?: unknown[];
+  /** Un enum cuyas variantes llevan comentario sale así, una por `const`. */
+  oneOf?: EsquemaCampo[];
+  const?: unknown;
+  /** Elementos de una lista. */
+  items?: EsquemaCampo;
+  /** Valores de un mapa (`BTreeMap<String, String>` → `{ type: "string" }`). */
+  additionalProperties?: EsquemaCampo | boolean;
+  /** Un struct anidado: TLS, paginación… */
+  $ref?: string;
 }
 
 export interface RunSummary {
@@ -174,6 +208,8 @@ export const api = {
   runDetail: (runId: string) => invoke<RunDetail>("run_detail", { runId }),
   startRun: (path: string) => invoke<void>("start_run", { path }),
   pipelineGraph: (path: string) => invoke<Graph>("pipeline_graph", { path }),
+  editPipeline: (path: string, revision: string, edits: Edit[]) =>
+    invoke<Graph>("edit_pipeline", { path, revision, edits }),
   catalog: () => invoke<Catalog>("catalog"),
 };
 

@@ -112,6 +112,7 @@ export function useMotor() {
     ejecutar,
     elegirDirectorio,
     refrescarRuns,
+    refrescarWorkspace,
     limpiarError: () => setError(null),
   };
 }

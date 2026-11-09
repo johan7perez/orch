@@ -161,7 +161,15 @@ impl PipelineSpec {
     /// es un DSN.
     pub fn from_path_as_written(path: impl AsRef<std::path::Path>) -> crate::Result<Self> {
         let path = path.as_ref();
-        Self::parse(&path.display().to_string(), &Self::read(path)?)
+        Self::from_yaml_str_as_written(&path.display().to_string(), &Self::read(path)?)
+    }
+
+    /// Como [`from_path_as_written`](Self::from_path_as_written), desde texto.
+    ///
+    /// Es la lectura con la que el editor comprueba sus propios cambios: lo
+    /// que escribe tiene que volver a leerse exactamente como esperaba.
+    pub fn from_yaml_str_as_written(path: &str, yaml: &str) -> crate::Result<Self> {
+        Self::parse(path, yaml)
     }
 
     fn read(path: &std::path::Path) -> crate::Result<String> {

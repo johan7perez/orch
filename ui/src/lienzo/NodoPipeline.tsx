@@ -20,7 +20,8 @@ export interface DatosNodo extends Record<string, unknown> {
   salidas: number;
 }
 
-const GLIFOS: Record<string, string> = {
+/** El tipo, en un glifo. Lo usan también la paleta y el inspector. */
+export const GLIFOS: Record<string, string> = {
   source: "▸",
   transform: "◆",
   sink: "■",

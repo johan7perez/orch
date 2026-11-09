@@ -7,9 +7,10 @@ completa está en [doc.md](doc.md); el desglose por fases, en
 **Estado: Fases 0 y 1 completas; Fase 2 en curso.** Motor de DAG con
 ejecución en streaming, transformaciones SQL sobre DataFusion, conectores
 CSV/Parquet/PostgreSQL/REST, historial en DuckDB y demonio con disparadores
-cron, más la aplicación de escritorio (Tauri) con el lienzo del pipeline y el
-inspector de config. Lo siguiente es editar el pipeline desde el lienzo
-(Fase 2.3).
+cron, más la aplicación de escritorio (Tauri) con el lienzo del pipeline, que
+ya edita: añadir, conectar, configurar y quitar nodos escribe el YAML tocando
+sólo lo que cambia. Lo siguiente es guardar las posiciones de los nodos, que
+cierra la Fase 2.3.
 
 ---
 
@@ -218,6 +219,49 @@ El inspector carga el pipeline **sin expandir los secretos**: lo que se ve es
 definido en esta máquina se puede abrir y editar igual, aunque no se pueda
 ejecutar.
 
+### Editar desde el lienzo
+
+- **Añadir:** arrastra un componente de la paleta al lienzo, o haz clic en
+  él. El nodo nuevo queda elegido y el inspector marca lo obligatorio que
+  falta.
+- **Conectar:** arrastra del conector de salida de un nodo al de entrada de
+  otro. Lo que el motor rechazaría (un sink como origen, una arista repetida)
+  el lienzo ni lo ofrece.
+- **Quitar:** elige un nodo o una arista y pulsa Supr, o usa *Eliminar* en el
+  inspector. Un nodo se va con sus aristas y con las esperas `after` que lo
+  nombraban.
+- **Configurar:** cada campo del inspector se guarda al salir de él o con
+  Intro, sin botón de guardar. Vaciarlo, o pulsar ↺, lo quita del fichero y
+  vuelve a su valor por defecto. Las listas se escriben separadas por comas
+  y los mapas, una línea `clave: valor` por entrada.
+- **Renombrar:** clic en el id, arriba del inspector.
+
+Lo que garantiza:
+
+- **El YAML se edita, no se reescribe.** Un pipeline es código que la gente
+  escribe a mano, con comentarios que explican el porqué y SQL formateado con
+  cuidado. El editor ([orch-edit](crates/orch-edit)) trabaja sobre un árbol
+  sintáctico sin pérdidas y toca sólo las líneas del cambio, imitando el
+  estilo del fichero: la línea en blanco entre nodos, las aristas
+  `{ from: a, to: b }` en una línea, `after` junto al componente. Al quitar
+  un nodo se va también el comentario que lo describía.
+- **Cada cambio se comprueba antes de escribirlo.** Se aplica al modelo y al
+  texto, y el texto resultante se relee con el mismo parser que usa el motor:
+  si no dice exactamente lo esperado, no se escribe nada. Un editor que a
+  veces dice «esto no lo sé hacer» es aceptable; uno que a veces cambia algo
+  que no le pediste, no.
+- **No pisa cambios ajenos.** Si el fichero cambió fuera de Orch desde que se
+  abrió (otro editor, un `git checkout`), el cambio se rechaza y el lienzo
+  recarga lo que hay en disco. La escritura es atómica: un corte a mitad
+  nunca deja el pipeline a medio escribir.
+- **Renombrar no rompe un `sql`.** El puerto de una arista se llama, por
+  defecto, como su nodo de origen, y un `sql` lo usa como nombre de tabla.
+  Si el destino es un `sql`, renombrar el origen fija `port:` con el nombre
+  antiguo para que la query siga funcionando.
+- **Los ids nuevos son minúsculas, números y `_`**, por ese mismo motivo: un
+  guion obligaría a entrecomillar la tabla, y DataFusion pasa a minúsculas lo
+  que no va entre comillas.
+
 ## Formato de pipeline
 
 ```yaml
@@ -413,6 +457,7 @@ crates/
   orch-core/         modelo de pipeline, validación del DAG, ejecutor, traits de conector
   orch-store/        historial de ejecuciones y métricas, en DuckDB
   orch-schedule/     disparadores cron y encadenamiento entre pipelines
+  orch-edit/         edición del YAML desde el lienzo, tocando sólo lo que cambia
   orch-connectors/   implementaciones nativas (CSV, generador, null, transformaciones)
   orch-sql/          transformaciones con expresiones, sobre DataFusion
   orch-rest/         conector HTTP: paginación, límite de tasa, reintentos
@@ -545,3 +590,7 @@ también hace usable el ciclo de desarrollo.
   origen aguas arriba; espiarlos en paralelo está pendiente.
 - **`aggregate` y `ORDER BY` rompen el streaming**: acumulan estado en
   memoria. Usa `memory_limit_mb` en esos nodos.
+- **El lienzo todavía no guarda posiciones.** Los nodos se colocan solos y se
+  recolocan después de cada cambio; arrastrarlos no está habilitado.
+- **No hay deshacer en el lienzo.** Cada cambio se escribe al momento en el
+  fichero, así que lo que haya en git es la red de seguridad.

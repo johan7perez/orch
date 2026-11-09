@@ -85,6 +85,7 @@ export function App() {
             cargando={motor.cargando}
             problema={motor.workspace?.problem ?? null}
             onEjecutar={(ruta, nombre) => void ejecutar(ruta, nombre)}
+            onEditado={() => void motor.refrescarWorkspace()}
           />
         ) : (
           <DetalleEjecucion

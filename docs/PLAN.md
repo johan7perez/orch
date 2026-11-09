@@ -309,13 +309,31 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
 - ✅ `orch connectors <nombre>`: la misma información para quien escribe el
   YAML a mano.
 
-### 2.3 Edición y escritura del YAML ⬜
+### 2.3 Edición y escritura del YAML 🚧
 
-- ⬜ Drag-and-drop: crear nodos desde el catálogo, conectar y desconectar.
-- ⬜ **Escritura que preserve comentarios y formato.** Serializar el spec
-  entero destruiría los comentarios del fichero, y un pipeline es código que
-  la gente edita a mano. Hay que editar el texto quirúrgicamente y tocar sólo
-  lo que cambió.
+- ✅ Drag-and-drop: crear nodos desde el catálogo (arrastrando o con un clic),
+  conectar y desconectar, quitar con Supr. Lo que el motor rechazaría —un
+  sink como origen de datos, una arista repetida— el lienzo ni lo ofrece.
+- ✅ **Escritura que preserva comentarios y formato.** Crate `orch-edit`
+  sobre `yaml-edit`, un árbol sintáctico sin pérdidas: cada cambio toca sólo
+  sus líneas e imita el estilo del fichero (línea en blanco entre nodos,
+  aristas `{ from, to }` en una línea, `after` junto al componente). Quitar un
+  nodo se lleva el comentario que lo describía.
+- ✅ **Cada cambio se comprueba antes de escribirse**: se aplica al modelo y
+  al texto, y el texto se relee con el parser del motor; si no da
+  exactamente el modelo esperado, no se escribe. Se conservan BOM y CRLF.
+- ✅ Concurrencia optimista: el grafo lleva la huella del texto que se
+  dibujó, y un cambio sobre un fichero que cambió por debajo se rechaza en vez
+  de pisarlo. Escritura atómica (temporal + renombrado).
+- ✅ Inspector editable: un control por tipo del esquema (texto, número,
+  booleano, opciones, lista, mapa `clave: valor`, JSON para estructuras),
+  renombrar con clic en el id y esperas `after`. Renombrar el origen de un
+  `sql` fija `port:` con el nombre antiguo, como hace el pushdown, para que la
+  query no se rompa.
+- ✅ Tests: resultado exacto de cada operación, más un barrido de todas las
+  operaciones sobre cada ejemplo comprobando que el diff toca sólo lo suyo.
+  Verificado conduciendo la ventana real: una docena de cambios de ida y
+  vuelta dejan el fichero idéntico byte a byte.
 - ⬜ Posiciones de los nodos: hoy se calculan; si se guardan, tienen que ir
   donde no estorben a quien edita el YAML a mano.
 
