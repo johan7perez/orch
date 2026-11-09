@@ -74,3 +74,43 @@ Esto aplica directamente al stack de UI (Tauri + React/Svelte Flow): el diseño 
 - **Overhead de plugins WASM**: medir el costo real vs. conectores nativos; reservar WASM solo para conectores de baja frecuencia si el overhead es alto.
 - **UI bloqueada por pipelines pesados**: todo el trabajo pesado corre en el backend Rust vía async; la UI solo recibe eventos, nunca bloquea el hilo principal.
 - **Diseñador visual con pipelines grandes**: requiere virtualización del canvas (renderizar solo nodos visibles) para no degradar el rendimiento con cientos de nodos.
+
+## Lo decidido al implementar
+
+Esta especificación es el punto de partida y se deja como estaba. Lo que dejaba
+abierto se fue concretando así; el detalle de cada fase está en
+[docs/PLAN.md](docs/PLAN.md) y el de cada decisión, en el [README](README.md).
+
+- **UI: React + React Flow.** De las dos opciones del stack. El lienzo dibuja
+  y edita el mismo YAML que se ejecuta: no hay un formato aparte para el
+  diseñador, y editar desde el lienzo toca sólo las líneas del cambio, con
+  los comentarios del fichero intactos.
+- **Telemetría sin WebSocket.** El motor corre dentro del proceso de la
+  aplicación, así que los eventos van del canal `broadcast` del ejecutor a la
+  ventana por los eventos de Tauri. El mismo canal alimenta el visor de la
+  CLI y el historial en DuckDB.
+- **Sin Rayon, de momento.** El paralelismo sale de que todos los nodos
+  corren a la vez como tareas de Tokio, con contrapresión por arista, y de
+  que DataFusion paraleliza dentro de cada nodo SQL. Ningún perfil ha pedido
+  más.
+- **Pushdown por conector en vez de un planificador global.** Un `filter` o
+  un `select` pegado a un origen que sabe resolverlo (PostgreSQL, Parquet) se
+  absorbe en él, sin acoplar el motor a DataFusion.
+- **Programación en el propio fichero.** El bloque `schedule` vive con el
+  pipeline, y un demonio vigila la carpeta.
+
+Y en qué quedaron los riesgos:
+
+- **Datasets enormes:** mitigado. Todo va en streaming por lotes de Arrow y la
+  memoria queda acotada por `batch_size × channel_capacity × aristas`; sólo
+  `aggregate` y `ORDER BY` acumulan, con un tope de memoria configurable.
+- **UI bloqueada:** mitigado. La ventana sólo recibe eventos; los lotes nunca
+  salen de Rust.
+- **Diseñador con pipelines grandes:** medido con 500 nodos (Fase 2.4). La
+  virtualización sola no basta: con el grafo entero a la vista, cada nodo es
+  un elemento que se repinta en cada fotograma. Un pipeline grande se abre a
+  un tamaño legible, con unas decenas de nodos a la vista, y así va fluido; la
+  vista general de cientos de nodos sigue siendo lenta, y el paso siguiente
+  sería pintarla en un `<canvas>`.
+- **Overhead de plugins WASM:** pendiente de medir en la Fase 2.5, antes de
+  comprometerse con la arquitectura.

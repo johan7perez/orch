@@ -38,7 +38,7 @@ Cierra y reabre la terminal para que `cargo` entre en el `PATH`.
 > `dlltool.exe` pero no el ensamblador `as.exe`, así que falla al generar las
 > import libraries de `raw-dylib` que necesita `getrandom`. El toolchain
 > `gnullvm` tampoco: espera un `x86_64-w64-mingw32-clang` externo. MSVC es
-> además lo que exigirán Tauri (Fase 1) y DuckDB (Fase 0.4).
+> además lo que exigen Tauri y DuckDB.
 
 ### Linux
 
@@ -66,18 +66,21 @@ llavero por defecto: si falla con `Object does not exist at path
 
 ## Compilar y probar
 
-```powershell
+```sh
 cargo build --workspace
 cargo test  --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
 
-> **Con 8 GB de RAM, compila con `-j 2`.** Varios `rustc` en paralelo sobre
-> DataFusion agotan la memoria y el compilador muere con
-> `STATUS_STACK_BUFFER_OVERRUN`, dejando artefactos a medio escribir en
-> `target/debug/deps` que luego dan `E0786`/`E0460`. Si ya ha pasado, hay que
-> limpiar los crates afectados (`cargo clean -p <crate>`) y recompilar.
+> **Con 8 GB de RAM, compila con `-j 2`** (o `CARGO_BUILD_JOBS=2`, que vale
+> también para `tauri dev`). Varios `rustc` en paralelo sobre DataFusion
+> agotan la memoria: en Windows el compilador muere con
+> `STATUS_STACK_BUFFER_OVERRUN` y en Linux lo mata el sistema, y en los dos
+> casos quedan artefactos a medio escribir en `target/debug/deps` que luego
+> dan `E0786`/`E0460`. Si ya ha pasado, hay que limpiar los crates afectados
+> (`cargo clean -p <crate>`) y recompilar. La primera build completa tarda:
+> DuckDB se compila desde fuente.
 
 Los tests de PostgreSQL y el del llavero **se saltan solos** si no hay
 servidor (`ORCH_TEST_PG_DSN`) o almacén de credenciales, y entonces cuentan
@@ -95,7 +98,7 @@ VITE_ORCH_MEDIR=1 ORCH_PIPELINES=/tmp/grande npx --prefix ui tauri dev
 
 ## Uso
 
-```powershell
+```sh
 # Qué conectores y transformaciones hay disponibles
 cargo run -p orch-cli -- connectors
 
@@ -125,7 +128,7 @@ npx --prefix ui tauri dev
 Medir el motor aislado de disco y red (usa `--release`, la diferencia es de
 un orden de magnitud):
 
-```powershell
+```sh
 cargo run --release -p orch-cli -- run examples/pipelines/benchmark.yaml
 ```
 
@@ -163,7 +166,10 @@ Tamaño en disco del mismo millón de filas del generador:
 | Parquet (snappy) | 13,3 MB |
 | Parquet (zstd) | **3,2 MB** |
 
-Logs detallados: `$env:ORCH_LOG = "orch_core=debug,orch_connectors=debug"`.
+Logs detallados con `ORCH_LOG`, que admite filtros por módulo:
+`ORCH_LOG=orch_core=debug,orch_connectors=debug` en bash, o
+`$env:ORCH_LOG = "orch_core=debug,orch_connectors=debug"` en PowerShell. Vale
+igual para la CLI que para la aplicación.
 
 `orch run` devuelve código de salida 0 sólo si todos los nodos terminaron
 correctamente.
@@ -333,6 +339,10 @@ comporta igual lanzada con la CLI desde la raíz del repositorio que desde la
 aplicación de escritorio, que arranca desde donde el sistema quiera. Una ruta
 absoluta se deja tal cual.
 
+Si alguien movió nodos en el lienzo, al final del fichero hay además un
+bloque `layout` con sus posiciones. El motor lo ignora; ver
+[Editar desde el lienzo](#editar-desde-el-lienzo).
+
 ### Programación
 
 El *cuándo* vive con el *qué*, en el mismo fichero. Sin bloque `schedule`, un
@@ -394,7 +404,7 @@ Ejemplo completo en [examples/pipelines/join.yaml](examples/pipelines/join.yaml)
 Esta tabla es un resumen. La lista exacta y siempre al día la da el propio
 binario, porque sale del mismo struct que deserializa la config:
 
-```powershell
+```sh
 orch connectors           # todos los nombres
 orch connectors csv       # qué config acepta, con tipos y valores por defecto
 ```
@@ -503,8 +513,9 @@ ui/                  frontend de la aplicación (React + Vite)
 ```
 
 El core no conoce ninguna implementación concreta: recibe un `Registry` con lo
-que haya disponible. El mismo motor servirá al backend de Tauri (Fase 1) y a
-los plugins WASM (Fase 2) sin cambios.
+que haya disponible. Por eso el mismo motor sirve a la CLI, al demonio y a la
+aplicación de escritorio sin cambios, y es lo que servirá a los conectores en
+WASM (Fase 2.5).
 
 ### Decisiones que conviene conocer
 
@@ -598,7 +609,7 @@ cadena se corta sin invalidar el pipeline.
 
 **El `SessionContext` de cada nodo SQL se construye al preparar el pipeline,
 no al ejecutarlo**, para que un pipeline preparado una vez y ejecutado muchas
-(el caso del demonio de la Fase 0.5 y de la UI) no lo repita. En release el
+(el caso del demonio y de la aplicación) no lo repita. En release el
 ahorro es pequeño —montar el catálogo de funciones de DataFusion cuesta menos
 de 1 ms por nodo—, pero en debug son cientos de milisegundos por nodo, así que
 también hace usable el ciclo de desarrollo.

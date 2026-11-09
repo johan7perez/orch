@@ -413,9 +413,18 @@ tarda 17–64 ms en release (150–540 ms en debug).
 
 ## Deuda técnica anotada
 
-Cada punto está documentado en el código donde aplica y listado en el README:
+Cada punto está documentado en el código donde aplica y, si se nota al usar
+Orch, listado en las limitaciones del README:
 
-- Sinks no transaccionales (un fallo a media escritura deja salida parcial).
+- Los sinks de fichero no son transaccionales (un fallo a media escritura
+  deja salida parcial). El de PostgreSQL sí lo es.
 - Fan-in por concatenación, no intercalado.
 - Las ramas independientes no se cancelan cuando otra falla.
+- Un nodo `sql` con varias entradas necesita que todas declaren esquema.
+- El demonio no recarga el directorio en caliente.
+- El lienzo no tiene deshacer: cada cambio se escribe al momento.
+- La vista general del lienzo con cientos de nodos a la vista es lenta: es el
+  límite de pintarla con elementos del DOM.
 - `serde_yaml` está sin mantenimiento; migrar cuando haya un sucesor claro.
+  El editor del lienzo ya no depende de él para escribir (usa `yaml-edit`),
+  sólo para leer.
