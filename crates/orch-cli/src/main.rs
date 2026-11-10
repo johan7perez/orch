@@ -40,7 +40,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Comprueba que el pipeline es un DAG válido y que sus conectores existen.
-    Validate { pipeline: PathBuf },
+    Validate {
+        pipeline: PathBuf,
+        /// Fichero del clúster, si el pipeline reparte nodos entre máquinas.
+        #[arg(long, env = "ORCH_CLUSTER")]
+        cluster: Option<PathBuf>,
+    },
     /// Muestra la estructura del pipeline sin ejecutarlo.
     Graph { pipeline: PathBuf },
     /// De qué columnas de origen sale cada columna de salida.
@@ -139,6 +144,10 @@ enum Command {
         /// Días de historial a conservar. Sin esto, no se poda nada.
         #[arg(long)]
         keep_days: Option<i64>,
+        /// Fichero del clúster: con él, el demonio también dispara los
+        /// pipelines que reparten nodos entre máquinas.
+        #[arg(long, env = "ORCH_CLUSTER")]
+        cluster: Option<PathBuf>,
     },
     /// Borra del historial las ejecuciones más viejas.
     Prune {
@@ -208,62 +217,42 @@ fn init_tracing(level: &str) {
 /// Un plugin que no carga no impide nada: se avisa y se sigue. Si un
 /// pipeline lo usa, fallará al validarse con el motivo de siempre.
 fn full_registry(plugins: Option<&std::path::Path>) -> std::sync::Arc<orch_core::Registry> {
-    std::sync::Arc::new(base_registry(plugins))
+    let (registry, avisos) = base_registry(plugins);
+    for aviso in avisos {
+        eprintln!("aviso: {aviso}");
+    }
+    std::sync::Arc::new(registry)
 }
 
-fn base_registry(plugins: Option<&std::path::Path>) -> orch_core::Registry {
+/// El registro, con los avisos de los plugins que no cargaron aparte: el
+/// coordinador de un clúster se hace su propia copia, y los avisos no tienen
+/// que salir dos veces.
+fn base_registry(plugins: Option<&std::path::Path>) -> (orch_core::Registry, Vec<String>) {
     let mut registry = orch_connectors::default_registry();
     orch_sql::register(&mut registry);
     orch_rest::register(&mut registry);
     orch_postgres::register(&mut registry);
     orch_flight::register(&mut registry);
-    if let Some(carpeta) = plugins {
-        for aviso in orch_wasm::registrar_carpeta(&mut registry, carpeta) {
-            eprintln!("aviso: {aviso}");
-        }
-    }
-    registry
+    let avisos = match plugins {
+        Some(carpeta) => orch_wasm::registrar_carpeta(&mut registry, carpeta),
+        None => Vec::new(),
+    };
+    (registry, avisos)
 }
 
-/// Lo que ejecuta `orch run`: el motor de siempre, o el coordinador de un
-/// clúster. Para quien escucha sus eventos son iguales.
-enum Motor {
-    Local {
-        ejecutor: Executor,
-        dag: Dag,
-    },
-    Cluster {
-        coordinador: orch_flight::cluster::Coordinador,
-        spec: PipelineSpec,
-        base: PathBuf,
-    },
-}
-
-impl Motor {
-    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<orch_core::RunEvent> {
-        match self {
-            Motor::Local { ejecutor, .. } => ejecutor.subscribe(),
-            Motor::Cluster { coordinador, .. } => coordinador.subscribe(),
-        }
-    }
-
-    fn spec(&self) -> &PipelineSpec {
-        match self {
-            Motor::Local { dag, .. } => dag.spec(),
-            Motor::Cluster { spec, .. } => spec,
-        }
-    }
-
-    async fn run(&self) -> orch_core::Result<orch_core::RunReport> {
-        match self {
-            Motor::Local { ejecutor, dag } => ejecutor.run(dag).await,
-            Motor::Cluster {
-                coordinador,
-                spec,
-                base,
-            } => coordinador.run(spec, base).await,
-        }
-    }
+/// El coordinador del clúster, si hay fichero de clúster.
+fn coordinador(
+    cluster: Option<&std::path::Path>,
+    plugins: Option<&std::path::Path>,
+) -> orch_core::Result<Option<std::sync::Arc<orch_flight::cluster::Coordinador>>> {
+    let Some(fichero) = cluster else {
+        return Ok(None);
+    };
+    let config = orch_flight::cluster::ClusterConfig::from_path(fichero)?;
+    let (registry, _) = base_registry(plugins);
+    Ok(Some(std::sync::Arc::new(
+        orch_flight::cluster::Coordinador::new(registry, config)?,
+    )))
 }
 
 /// La carpeta a la que pertenece lo que pide el comando: ahí se buscan sus
@@ -277,7 +266,9 @@ fn carpeta_base(command: &Command) -> Option<PathBuf> {
             .unwrap_or_else(|| PathBuf::from("."))
     };
     match command {
-        Command::Validate { pipeline } | Command::Graph { pipeline } => Some(carpeta_de(pipeline)),
+        Command::Validate { pipeline, .. } | Command::Graph { pipeline } => {
+            Some(carpeta_de(pipeline))
+        }
         Command::Lineage { pipeline, .. } => Some(carpeta_de(pipeline)),
         Command::Run { pipeline, .. } => Some(carpeta_de(pipeline)),
         Command::Worker { dir, .. } => Some(dir.clone()),
@@ -299,13 +290,19 @@ async fn dispatch(
     let registry = full_registry(plugins);
 
     match command {
-        Command::Daemon { dir, keep_days } => {
+        Command::Daemon {
+            dir,
+            keep_days,
+            cluster,
+        } => {
+            let coordinador = coordinador(cluster.as_deref(), plugins)?;
             daemon::run(
                 registry,
                 daemon::DaemonOptions {
                     dir,
                     store: store_path.to_path_buf(),
                     keep_days,
+                    coordinador,
                 },
             )
             .await?;
@@ -374,7 +371,33 @@ async fn dispatch(
             }
         },
 
-        Command::Validate { pipeline } => {
+        Command::Validate { pipeline, cluster } => {
+            let texto = std::fs::read_to_string(&pipeline).map_err(|source| {
+                orch_core::OrchError::SpecIo {
+                    path: pipeline.display().to_string(),
+                    source,
+                }
+            })?;
+            let escrito =
+                PipelineSpec::from_yaml_str_as_written(&pipeline.display().to_string(), &texto)?;
+            if orch_flight::cluster::reparte(&escrito) {
+                // Repartido: aquí se comprueba lo que corre aquí; lo de cada
+                // worker, con sus conectores y sus secretos, allí.
+                let coordinador = coordinador(cluster.as_deref(), plugins)?
+                    .ok_or_else(|| orch_flight::cluster::sin_cluster(&escrito))?;
+                let base = pipeline
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or(std::path::Path::new("."));
+                coordinador.validar(&escrito, base).await?;
+                println!(
+                    "✓ `{}` es válido y se puede repartir: {} nodo(s), {} arista(s)",
+                    escrito.name,
+                    escrito.nodes.len(),
+                    escrito.edges.len()
+                );
+                return Ok(ExitCode::SUCCESS);
+            }
             let (dag, pushed) = load(&pipeline, &registry)?;
             Executor::new(registry).prepare(&dag).await?;
             println!(
@@ -404,9 +427,12 @@ async fn dispatch(
                     )));
                 }
             }
-            let lineage = Executor::new(registry).lineage(&dag).await?;
+            // Con los demás pipelines de la carpeta: si uno lee lo que escribe
+            // otro, el rastro sigue por el fichero.
+            let (lineage, otros) =
+                orch_schedule::lineage_en_carpeta(&registry, &pipeline, &dag).await?;
             match format {
-                Format::Text => report::print_lineage(&dag, &lineage, node.as_deref()),
+                Format::Text => report::print_lineage(&dag, &lineage, node.as_deref(), &otros),
                 Format::Json => {
                     let elegidos: Vec<&orch_core::NodeLineage> = lineage
                         .iter()
@@ -484,35 +510,12 @@ async fn dispatch(
             // Se lee una vez: lo que corre y lo que se guarda como «la versión
             // que corrió» son el mismo texto.
             let version = orch_version::Snapshot::take(&pipeline)?;
-            let executor = match &cluster {
-                None => {
-                    let (dag, _) = load_spec(version.spec()?, &registry)?;
-                    Motor::Local {
-                        ejecutor: Executor::new(registry),
-                        dag,
-                    }
-                }
-                // Repartido: el pipeline va tal y como está escrito, porque
-                // cada máquina resuelve sus secretos y sus rutas.
-                Some(fichero) => {
-                    let config = orch_flight::cluster::ClusterConfig::from_path(fichero)?;
-                    let spec = PipelineSpec::from_yaml_str_as_written(
-                        &pipeline.display().to_string(),
-                        &version.text,
-                    )?;
-                    let registry = std::sync::Arc::try_unwrap(registry)
-                        .map_err(|_| orch_core::OrchError::Other("registro compartido".into()))?;
-                    Motor::Cluster {
-                        coordinador: orch_flight::cluster::Coordinador::new(registry, config)?,
-                        spec,
-                        base: version
-                            .path
-                            .parent()
-                            .map(std::path::Path::to_path_buf)
-                            .unwrap_or_else(|| PathBuf::from(".")),
-                    }
-                }
-            };
+            let executor = orch_flight::cluster::Motor::para(
+                &pipeline,
+                &version.text,
+                registry,
+                coordinador(cluster.as_deref(), plugins)?,
+            )?;
 
             // Suscribirse ANTES de arrancar: el canal es broadcast y los
             // eventos anteriores a la suscripción no se recuperan.

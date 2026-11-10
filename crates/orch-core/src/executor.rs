@@ -19,7 +19,7 @@ use crate::dag::Dag;
 use crate::error::{OrchError, Result};
 use crate::event::{NodeProgress, RunEvent, EVENT_CHANNEL_CAPACITY};
 use crate::io::{batch_channel, Input, IoStats, NodeSignal, Output, Probe};
-use crate::lineage::{self, ColumnDerivation, NodeLineage, StepLineage};
+use crate::lineage::{self, ColumnDerivation, Externos, NodeLineage, StepLineage};
 use crate::registry::Registry;
 use crate::schema::{InputSchemas, PortSchema};
 use crate::spec::{NodeKind, RetryPolicy};
@@ -117,18 +117,40 @@ impl Executor {
     /// validate`. No lee datos, pero los orígenes sí miran su esquema: la
     /// cabecera de un CSV, el pie de un Parquet, la query en PostgreSQL.
     pub async fn lineage(&self, dag: &Dag) -> Result<Vec<NodeLineage>> {
+        Ok(self.lineage_con(dag, &Externos::new()).await?.0)
+    }
+
+    /// Como [`lineage`](Self::lineage), siguiendo además los ficheros: un
+    /// origen que lee lo que escribe un sink —del mismo pipeline, o de otro
+    /// según `externos`— hereda las columnas y los orígenes de ese sink, en
+    /// vez de cortar ahí el rastro.
+    ///
+    /// Devuelve también lo que escribe cada sink de este pipeline con un
+    /// `path`, por si otro pipeline lo lee.
+    pub async fn lineage_con(
+        &self,
+        dag: &Dag,
+        externos: &Externos,
+    ) -> Result<(Vec<NodeLineage>, Externos)> {
         let runners = self.build_runners(dag)?;
-        let (inputs, produced) = propagate(dag, &runners).await?;
+        let (inputs, produced) = propagate_con(dag, &runners, Some(externos)).await?;
         let mut resolved: Vec<Option<NodeLineage>> = vec![None; dag.len()];
+        // Lo que escriben los sinks de aquí, según se van resolviendo.
+        let mut aqui = Externos::new();
 
         for &i in dag.topological_order() {
             let id = dag.node(i).id.as_str();
             let kind = dag.node(i).kind.label();
+            let ruta = lineage::ruta_de(&dag.node(i).kind);
 
             if let Runner::Source(_) = &runners[i] {
-                resolved[i] = Some(match &produced[i] {
-                    Some(schema) => lineage::of_source(id, schema),
-                    None => NodeLineage::unknown(id, kind, id),
+                let productor = ruta.as_ref().and_then(|r| aqui.get(r).or(externos.get(r)));
+                resolved[i] = Some(match (&produced[i], productor) {
+                    (Some(schema), Some(productor)) => {
+                        lineage::of_source_enlazado(id, schema, productor)
+                    }
+                    (Some(schema), None) => lineage::of_source(id, schema),
+                    (None, _) => NodeLineage::unknown(id, kind, id),
                 });
                 continue;
             }
@@ -166,7 +188,7 @@ impl Executor {
                 Runner::Source(_) => unreachable!("los orígenes se resuelven arriba"),
             };
 
-            resolved[i] = Some(match step {
+            let nodo = match step {
                 Some(step) => lineage::resolve(
                     id,
                     kind,
@@ -175,13 +197,30 @@ impl Executor {
                     written.as_deref().or(produced[i].as_deref()),
                 ),
                 None => NodeLineage::unknown(id, kind, id),
-            });
+            };
+            if let (Runner::Sink(_), Some(ruta), Some(columnas)) =
+                (&runners[i], ruta, nodo.columns.clone())
+            {
+                aqui.insert(
+                    ruta,
+                    lineage::Productor {
+                        pipeline: None,
+                        nodo: id.to_string(),
+                        schema: written.clone(),
+                        columnas,
+                    },
+                );
+            }
+            resolved[i] = Some(nodo);
         }
 
-        Ok(resolved
-            .into_iter()
-            .map(|l| l.expect("el orden topológico pasa por todos los nodos"))
-            .collect())
+        Ok((
+            resolved
+                .into_iter()
+                .map(|l| l.expect("el orden topológico pasa por todos los nodos"))
+                .collect(),
+            aqui,
+        ))
     }
 
     fn build_runners(&self, dag: &Dag) -> Result<Vec<Runner>> {
@@ -639,17 +678,24 @@ async fn execute_node(
 /// un nodo detecta al ver sus entradas: una columna que no existe, un fan-in
 /// con esquemas incompatibles o un `filter` con dos entradas.
 async fn plan_schemas(dag: &Dag, runners: &[Runner]) -> Result<Vec<InputSchemas>> {
-    Ok(propagate(dag, runners).await?.0)
+    Ok(propagate_con(dag, runners, None).await?.0)
 }
 
 /// Lo mismo que [`plan_schemas`], devolviendo además lo que produce cada nodo.
-async fn propagate(
+/// Con `prestados`, sólo para el lineage: un origen que todavía no puede
+/// mirar su fichero (lo escribe antes un sink de este pipeline, o otro
+/// pipeline) toma el esquema que escribirá ese sink, recortado a sus
+/// `columns`. Nunca al validar ni al ejecutar: ahí manda lo que hay en disco.
+async fn propagate_con(
     dag: &Dag,
     runners: &[Runner],
+    prestados: Option<&Externos>,
 ) -> Result<(Vec<InputSchemas>, Vec<Option<arrow::datatypes::SchemaRef>>)> {
     let n = dag.len();
     let mut produced: Vec<Option<arrow::datatypes::SchemaRef>> = vec![None; n];
     let mut inputs: Vec<InputSchemas> = vec![InputSchemas::default(); n];
+    let mut escritos: std::collections::HashMap<String, arrow::datatypes::SchemaRef> =
+        std::collections::HashMap::new();
 
     for &i in dag.topological_order() {
         let ports = dag
@@ -665,10 +711,39 @@ async fn propagate(
         inputs[i] = InputSchemas::new(ports);
 
         produced[i] = match &runners[i] {
-            Runner::Source(source) => source.schema().await?,
+            Runner::Source(source) => {
+                let propio = source.schema().await?;
+                match (propio, prestados) {
+                    (Some(schema), _) => Some(schema),
+                    (None, Some(externos)) => {
+                        let nodo = dag.node(i);
+                        let config = match &nodo.kind {
+                            NodeKind::Source { config, .. } => config.clone(),
+                            _ => serde_json::Value::Null,
+                        };
+                        lineage::ruta_de(&nodo.kind)
+                            .and_then(|r| {
+                                escritos
+                                    .get(&r)
+                                    .cloned()
+                                    .or_else(|| externos.get(&r).and_then(|p| p.schema.clone()))
+                            })
+                            .and_then(|escrito| lineage::esquema_leido(&escrito, &config))
+                    }
+                    (None, None) => None,
+                }
+            }
             Runner::Transform(transform) => transform.plan(&inputs[i]).await?,
             Runner::Sink(sink) => {
                 sink.plan(&inputs[i]).await?;
+                if prestados.is_some() {
+                    if let (Some(ruta), Ok(Some(schema))) = (
+                        lineage::ruta_de(&dag.node(i).kind),
+                        inputs[i].concatenated(&dag.node(i).id),
+                    ) {
+                        escritos.insert(ruta, schema);
+                    }
+                }
                 None
             }
         };

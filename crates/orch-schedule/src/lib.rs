@@ -8,9 +8,11 @@
 //! en vez de con esperas reales. El demonio de la CLI es una capa fina que
 //! le pasa el reloj.
 
+mod carpeta;
 mod cron;
 mod discover;
 mod scheduler;
 
+pub use carpeta::lineage_en_carpeta;
 pub use discover::{discover, Broken, Discovery};
 pub use scheduler::{Changes, CronTrigger, Entry, Launch, Reason, Scheduler};

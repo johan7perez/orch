@@ -7,6 +7,7 @@
 //! servidor, ni puerto, ni serialización de los datos. Lo único que cruza
 //! hacia el webview son eventos y métricas, nunca los lotes de Arrow.
 
+mod avisos;
 mod commands;
 mod events;
 mod state;
@@ -33,6 +34,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState::new(store, default_directory()))
         .invoke_handler(tauri::generate_handler![
             commands::workspace,

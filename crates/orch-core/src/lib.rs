@@ -42,8 +42,8 @@ pub use event::{NodeProgress, RunEvent};
 pub use executor::{Executor, NodeReport, NodeStatus, RunReport, PROGRESS_EVERY};
 pub use io::{Input, InputPort, IoStats, NodeSignal, Output, Probe};
 pub use lineage::{
-    ColumnDerivation, ColumnLineage, Derivation, Impact, InputColumn, NodeColumn, NodeLineage,
-    StepLineage,
+    ColumnDerivation, ColumnLineage, Derivation, Externos, Impact, InputColumn, NodeColumn,
+    NodeLineage, Productor, StepLineage,
 };
 pub use pushdown::{PushdownOp, Pushed};
 pub use registry::Registry;

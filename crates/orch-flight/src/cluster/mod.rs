@@ -24,6 +24,7 @@
 mod aristas;
 mod coordinador;
 mod division;
+mod motor;
 mod servicio;
 
 use std::collections::BTreeMap;
@@ -37,6 +38,7 @@ use tonic::transport::{Certificate, ClientTlsConfig, Identity, ServerTlsConfig};
 pub use aristas::{registrar_aristas, Aristas};
 pub use coordinador::Coordinador;
 pub use division::{dividir, Donde, Parte};
+pub use motor::{reparte, sin_cluster, Motor};
 pub use servicio::servir_worker;
 
 /// Nombre con el que se llama a «donde se lanza el pipeline».

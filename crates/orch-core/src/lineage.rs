@@ -131,13 +131,31 @@ pub struct StepLineage {
 /// un sink, cuando es adonde llega.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct NodeColumn {
+    /// El pipeline del nodo, cuando no es el que se está mirando: una columna
+    /// que sale de un fichero que escribe otro pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<String>,
     pub node: NodeId,
     pub column: String,
 }
 
+impl NodeColumn {
+    /// Una columna de un nodo de este mismo pipeline.
+    pub fn new(node: impl Into<String>, column: impl Into<String>) -> Self {
+        Self {
+            pipeline: None,
+            node: node.into(),
+            column: column.into(),
+        }
+    }
+}
+
 impl std::fmt::Display for NodeColumn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}", self.node, self.column)
+        match &self.pipeline {
+            Some(p) => write!(f, "{p}:{}.{}", self.node, self.column),
+            None => write!(f, "{}.{}", self.node, self.column),
+        }
     }
 }
 
@@ -198,10 +216,7 @@ pub(crate) fn of_source(node: &str, schema: &Schema) -> NodeLineage {
                 .map(|f| ColumnLineage {
                     column: f.name().clone(),
                     data_type: f.data_type().to_string(),
-                    origins: vec![NodeColumn {
-                        node: node.to_string(),
-                        column: f.name().clone(),
-                    }],
+                    origins: vec![NodeColumn::new(node, f.name())],
                     derivation: Derivation::Copy,
                 })
                 .collect(),
@@ -209,6 +224,93 @@ pub(crate) fn of_source(node: &str, schema: &Schema) -> NodeLineage {
         indirect: Vec::new(),
         unknown_at: None,
     }
+}
+
+// --- Ficheros que escribe uno y lee otro ----------------------------------------
+
+/// Un sink que escribe un fichero que lee un origen: lo que el origen hereda.
+#[derive(Debug, Clone)]
+pub struct Productor {
+    /// El pipeline del sink; `None` si es el mismo que el del origen.
+    pub pipeline: Option<String>,
+    pub nodo: NodeId,
+    /// Lo que escribe, si se sabe: el esquema que tendrá el fichero.
+    pub schema: Option<arrow::datatypes::SchemaRef>,
+    /// Sus columnas, con sus orígenes.
+    pub columnas: Vec<ColumnLineage>,
+}
+
+/// Los ficheros que escriben otros pipelines, por su ruta normalizada.
+pub type Externos = std::collections::HashMap<String, Productor>;
+
+/// El fichero que lee o escribe un nodo: su `path`, la única clave que en la
+/// config de un nodo significa «fichero en disco».
+pub fn ruta_de(kind: &crate::spec::NodeKind) -> Option<String> {
+    use crate::spec::NodeKind;
+    let config = match kind {
+        NodeKind::Source { config, .. } | NodeKind::Sink { config, .. } => config,
+        NodeKind::Transform { .. } => return None,
+    };
+    config.get("path")?.as_str().map(normalizar_ruta)
+}
+
+/// Quita `.` y resuelve `..` sin tocar el disco: el fichero puede no existir
+/// todavía, y `out/x.csv` y `./out/../out/x.csv` son el mismo.
+pub fn normalizar_ruta(ruta: &str) -> String {
+    use std::path::{Component, PathBuf};
+    let mut limpia = PathBuf::new();
+    for c in std::path::Path::new(ruta).components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !limpia.pop() {
+                    limpia.push("..");
+                }
+            }
+            otro => limpia.push(otro.as_os_str()),
+        }
+    }
+    limpia.to_string_lossy().into_owned()
+}
+
+/// El esquema de lo que escribió `productor`, como lo leerá un origen: si el
+/// origen sólo pide unas `columns`, sólo esas y en ese orden. Es la misma
+/// convención que usa el pushdown para recortar columnas en el origen.
+pub(crate) fn esquema_leido(
+    escrito: &arrow::datatypes::SchemaRef,
+    config: &serde_json::Value,
+) -> Option<arrow::datatypes::SchemaRef> {
+    let Some(columnas) = config.get("columns").and_then(|c| c.as_array()) else {
+        return Some(arrow::datatypes::SchemaRef::clone(escrito));
+    };
+    let indices: Option<Vec<usize>> = columnas
+        .iter()
+        .map(|c| c.as_str().and_then(|n| escrito.index_of(n).ok()))
+        .collect();
+    escrito.project(&indices?).ok().map(std::sync::Arc::new)
+}
+
+/// Las columnas de un origen que lee lo que escribe `productor`: cada una
+/// hereda los orígenes de la columna del mismo nombre del sink. Lo que el
+/// sink no escribe (un fichero más viejo, con otra forma) se queda como
+/// origen propio.
+pub(crate) fn of_source_enlazado(
+    node: &str,
+    schema: &Schema,
+    productor: &Productor,
+) -> NodeLineage {
+    let mut lineage = of_source(node, schema);
+    for columna in lineage.columns.iter_mut().flatten() {
+        if let Some(de_sink) = productor
+            .columnas
+            .iter()
+            .find(|c| c.column == columna.column)
+        {
+            columna.origins = de_sink.origins.clone();
+            columna.derivation = de_sink.derivation;
+        }
+    }
+    lineage
 }
 
 /// Encadena un salto con lo ya resuelto en las entradas.
@@ -313,10 +415,9 @@ pub fn impact(lineage: &[NodeLineage], origin: &NodeColumn) -> Impact {
         if node.kind == "sink" {
             for column in node.columns.iter().flatten() {
                 if column.origins.contains(origin) {
-                    impact.outputs.push(NodeColumn {
-                        node: node.node.clone(),
-                        column: column.column.clone(),
-                    });
+                    impact
+                        .outputs
+                        .push(NodeColumn::new(&node.node, &column.column));
                 }
             }
         }
@@ -325,4 +426,106 @@ pub fn impact(lineage: &[NodeLineage], origin: &NodeColumn) -> Impact {
         }
     }
     impact
+}
+
+/// El lineage de varios pipelines a la vez —una carpeta—, siguiendo los
+/// ficheros que escribe uno y lee otro: una columna de la salida de `b` que
+/// sale de un fichero que escribe `a` llega hasta los orígenes de `a`.
+///
+/// Se calculan en orden: primero quien escribe, luego quien lee. Si dos se
+/// leen mutuamente (un ciclo), lo que no se puede ordenar se calcula sin
+/// enlazar, en vez de dar vueltas. El resultado va en el orden de entrada.
+pub async fn de_varios(
+    executor: &crate::Executor,
+    pipelines: &[(String, crate::Dag)],
+) -> Vec<crate::Result<Vec<NodeLineage>>> {
+    use crate::spec::NodeKind;
+    use std::collections::BTreeSet;
+
+    let rutas = |dag: &crate::Dag, de_sink: bool| -> BTreeSet<String> {
+        dag.nodes()
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::Sink { .. }) == de_sink)
+            .filter(|n| !matches!(n.kind, NodeKind::Transform { .. }))
+            .filter_map(|n| ruta_de(&n.kind))
+            .collect()
+    };
+    let escribe: Vec<BTreeSet<String>> = pipelines.iter().map(|(_, d)| rutas(d, true)).collect();
+    let lee: Vec<BTreeSet<String>> = pipelines.iter().map(|(_, d)| rutas(d, false)).collect();
+
+    // Kahn: `i` antes que `j` si `j` lee algo que escribe `i`.
+    let n = pipelines.len();
+    let depende = |j: usize, i: usize| i != j && !escribe[i].is_disjoint(&lee[j]);
+    let mut pendientes: Vec<usize> = (0..n).collect();
+    let mut orden = Vec::with_capacity(n);
+    while !pendientes.is_empty() {
+        let libre = pendientes
+            .iter()
+            .position(|&j| !pendientes.iter().any(|&i| depende(j, i)));
+        // Con un ciclo no hay ninguno libre: se sigue por el primero.
+        let k = libre.unwrap_or(0);
+        orden.push(pendientes.remove(k));
+    }
+
+    let mut externos = Externos::new();
+    let mut resultados: Vec<Option<crate::Result<Vec<NodeLineage>>>> =
+        (0..n).map(|_| None).collect();
+    for i in orden {
+        let (nombre, dag) = &pipelines[i];
+        // Lo que escribe él mismo lo resuelve él, con sus propios sinks.
+        let ajenos: Externos = externos
+            .iter()
+            .filter(|(ruta, _)| !escribe[i].contains(*ruta))
+            .map(|(r, p)| (r.clone(), p.clone()))
+            .collect();
+        resultados[i] = Some(match executor.lineage_con(dag, &ajenos).await {
+            Ok((nodos, escritos)) => {
+                for (ruta, mut productor) in escritos {
+                    productor.pipeline = Some(nombre.clone());
+                    // Visto desde otro pipeline, lo que no dice de dónde es,
+                    // es de éste.
+                    for columna in &mut productor.columnas {
+                        for origen in &mut columna.origins {
+                            origen.pipeline.get_or_insert_with(|| nombre.clone());
+                        }
+                    }
+                    externos.insert(ruta, productor);
+                }
+                Ok(nodos)
+            }
+            Err(err) => Err(err),
+        });
+    }
+    resultados
+        .into_iter()
+        .map(|r| r.expect("cada pipeline se calcula una vez"))
+        .collect()
+}
+
+/// A qué salidas de **otros** pipelines llega una columna de un origen de
+/// `pipeline`: las que la leen a través de un fichero.
+pub fn impacto_en_otros(
+    otros: &[(String, Vec<NodeLineage>)],
+    pipeline: &str,
+    origen: &NodeColumn,
+) -> Vec<NodeColumn> {
+    let buscado = NodeColumn {
+        pipeline: Some(pipeline.to_string()),
+        ..origen.clone()
+    };
+    let mut salidas = Vec::new();
+    for (nombre, nodos) in otros {
+        for nodo in nodos.iter().filter(|n| n.kind == "sink") {
+            for columna in nodo.columns.iter().flatten() {
+                if columna.origins.contains(&buscado) {
+                    salidas.push(NodeColumn {
+                        pipeline: Some(nombre.clone()),
+                        node: nodo.node.clone(),
+                        column: columna.column.clone(),
+                    });
+                }
+            }
+        }
+    }
+    salidas
 }

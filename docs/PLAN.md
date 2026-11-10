@@ -489,7 +489,7 @@ tarda 17–64 ms en release (150–540 ms en debug).
   curso según llegan, y en el detalle de una ejecución pasada desde el
   historial. Un fallo o un cuelgue, en rojo; ir lenta, en el color de aviso;
   siempre con el texto, nunca sólo el color.
-- ⬜ Notificación del sistema en la aplicación (hoy, dentro de la ventana).
+- ✅ Notificación del sistema en la aplicación (Fase 6.2).
 
 ### 3.3 Lineage de datos a nivel de columna ✅
 
@@ -524,8 +524,7 @@ tarda 17–64 ms en release (150–540 ms en debug).
   `sql_resumen.yaml`), copias y renombres, fan-in, SQL variado, y los dos
   cortes de cadena: un origen sin esquema y una transformación que no declara
   su lineage.
-- ⬜ Lineage entre pipelines: hoy se para en el origen, aunque lea un fichero
-  que escribe otro pipeline (o un sink del mismo).
+- ✅ Lineage entre pipelines (Fase 6.3).
 
 ## Fase 4 — Escalabilidad ✅
 
@@ -638,7 +637,7 @@ el candidato natural). Medir antes de decidir, por pasos:
   coordinador de otra CA; y de la división. Probado también con tres
   procesos (`orch worker` ×2 y `orch run --cluster`) y certificados hechos
   con `openssl`.
-- ⬜ Repartir desde el demonio y la aplicación (hoy, sólo `orch run`).
+- ✅ Repartir desde el demonio y la aplicación (Fase 6.1).
 - ⬜ Esperas `after` entre nodos de máquinas distintas.
 - ✅ **Flight sobre TLS**: bloque `tls` en los dos extremos (PEM), con TLS
   mutuo (`client_ca`) como alternativa al token para escuchar fuera. Sobre
@@ -703,6 +702,70 @@ nuevas.
   cambiado, nuevo y quitado, encadenamiento nuevo, cola de uno desactivado,
   quitar uno que corre) y probado con el demonio de verdad: añadir, romper,
   arreglar, borrar, desactivar, cambiar contenido y tocar sin cambiar.
+
+## Fase 6 — Completar lo nuevo ✅
+
+### 6.1 Pipelines repartidos desde el demonio y la aplicación ✅
+
+- ✅ `Motor` compartido por `orch run`, el demonio y la aplicación: decide
+  por el pipeline —con algún `worker:`, el coordinador; sin ninguno, el motor
+  de siempre— y un pipeline repartido sin clúster se rechaza diciendo qué
+  falta, en vez de correr en la máquina equivocada.
+- ✅ Un coordinador para varias ejecuciones a la vez: cada una publica en su
+  propio canal (las alertas de una no saltan con la otra), y el servicio que
+  sirve las aristas que salen de aquí se abre una vez y vive con el
+  coordinador, en vez de pelearse dos ejecuciones por el mismo puerto.
+- ✅ `orch daemon --cluster` (o `ORCH_CLUSTER`) valida y dispara los
+  repartidos; `orch validate --cluster` comprueba lo de aquí entero y que el
+  pipeline se puede partir, sin necesitar los workers encendidos. La
+  aplicación toma el clúster de `ORCH_CLUSTER`; sin él, la lista marca los
+  repartidos con lo que falta.
+- ✅ Tests: dos ejecuciones a la vez con el mismo coordinador (y su servidor
+  de aristas compartido) sin mezclar eventos, y la decisión del `Motor`.
+  Probado con el demonio de verdad: dos workers y un pipeline repartido con
+  cron cada minuto, que se disparó a su hora y quedó en el historial.
+- ⬜ Pasarlo por la ventana: el camino de la aplicación es el mismo `Motor`
+  que el demonio, pero no se ha ejecutado desde la ventana con un clúster.
+
+### 6.2 Alertas como notificación del sistema ✅
+
+- ✅ La aplicación avisa con una notificación del sistema cuando salta una
+  alerta y la ventana no está al frente (detrás de otra, minimizada); con la
+  ventana delante no, porque el aviso ya sale en ella. El título dice qué
+  pasó y en qué pipeline; el cuerpo, el detalle.
+- ✅ Sale desde Rust, donde nace la alerta, con el plugin de notificaciones
+  de Tauri: llega aunque la interfaz no esté pintando nada, y en un hilo
+  aparte, porque en Linux espera la respuesta de D-Bus.
+- ✅ Probado en la ventana con un pipeline que se cuelga: minimizada, llegan
+  por D-Bus la notificación del cuelgue a los 3 s y la del fallo después; al
+  frente, ninguna, y el aviso sale dentro. De paso quedó visto en la ventana
+  el aviso de la 3.2, que no se había podido comprobar.
+- ⬜ La notificación se presenta con el nombre del ejecutable (`orch-app`):
+  el plugin no deja elegirlo. Ver qué muestra con la aplicación instalada.
+
+### 6.3 Lineage entre pipelines ✅
+
+- ✅ Un origen que lee lo que escribe un sink hereda las columnas y los
+  orígenes de ese sink: del mismo pipeline (escribir un Parquet y releerlo,
+  con `after`) o de otro de la misma carpeta. El vínculo es la ruta (`path`),
+  normalizada sin tocar el disco: `./out/x.csv` y `out/x.csv` son el mismo.
+- ✅ Aunque el fichero aún no exista: el origen toma prestado el esquema que
+  escribirá el sink, recortado a sus `columns` (la convención del pushdown).
+  **Sólo para el lineage**: al validar y ejecutar manda lo que hay en disco,
+  porque un esquema prestado equivocado haría planificar contra columnas que
+  no llegan. Un test lo comprueba.
+- ✅ Una carpeta se calcula en orden —primero quien escribe, luego quien
+  lee— y un ciclo (dos que se leen mutuamente) se calcula sin enlazar en vez
+  de dar vueltas. Lo de otro pipeline sale con su nombre (`filtra-clientes:
+  leer.spend`), y el impacto de una columna llega a las salidas de los
+  pipelines que la leen después.
+- ✅ `orch lineage` y el inspector de la aplicación miran la carpeta del
+  pipeline; en el inspector, un origen de otro pipeline se nombra pero no es
+  un botón, porque no está en ese lienzo. `examples/pipelines/parquet.yaml`,
+  que antes se cortaba en `releer`, ahora llega hasta el CSV.
+- ✅ Tests: el caso de `parquet.yaml`, dos pipelines pasados en orden inverso,
+  un ciclo, y que validar no usa el esquema prestado.
+- ⬜ Seguir también tablas (PostgreSQL), no sólo ficheros.
 
 ---
 

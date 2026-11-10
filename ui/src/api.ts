@@ -331,8 +331,17 @@ export type Derivacion = "copy" | "computed" | "aggregated" | "unknown";
 
 /** Una columna de un nodo: de un origen, o de un sink al que llega. */
 export interface NodeColumn {
+  /** El pipeline del nodo, cuando no es el que se está mirando. */
+  pipeline?: string | null;
   node: string;
   column: string;
+}
+
+/** El lineage de un pipeline y, de los demás de su carpeta, sus salidas. */
+export interface LineageCarpeta {
+  pipeline: string;
+  nodes: NodeLineage[];
+  otros: { pipeline: string; nodes: NodeLineage[] }[];
 }
 
 export interface ColumnLineage {
@@ -373,7 +382,7 @@ export const api = {
   editPipeline: (path: string, revision: string, edits: Edit[]) =>
     invoke<Graph>("edit_pipeline", { path, revision, edits }),
   catalog: () => invoke<Catalog>("catalog"),
-  pipelineLineage: (path: string) => invoke<NodeLineage[]>("pipeline_lineage", { path }),
+  pipelineLineage: (path: string) => invoke<LineageCarpeta>("pipeline_lineage", { path }),
   pipelineHistory: (path: string) => invoke<PipelineHistory>("pipeline_history", { path }),
   pipelineDiff: (path: string, from: VersionRef, to: VersionRef) =>
     invoke<VersionDiff>("pipeline_diff", { path, from, to }),

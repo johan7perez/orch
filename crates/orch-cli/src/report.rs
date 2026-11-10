@@ -106,7 +106,12 @@ pub fn print_graph(dag: &Dag) {
 
 /// El lineage de un pipeline: sin nodo, lo que escribe cada sink; con un
 /// origen, adónde llega cada una de sus columnas.
-pub fn print_lineage(dag: &Dag, lineage: &[NodeLineage], node: Option<&str>) {
+pub fn print_lineage(
+    dag: &Dag,
+    lineage: &[NodeLineage],
+    node: Option<&str>,
+    otros: &[(String, Vec<NodeLineage>)],
+) {
     let cabecera = |l: &NodeLineage| {
         let componente = dag
             .index_of(&l.node)
@@ -127,7 +132,9 @@ pub fn print_lineage(dag: &Dag, lineage: &[NodeLineage], node: Option<&str>) {
         cabecera(elegido);
         match &elegido.columns {
             None => print_unknown(dag, elegido),
-            Some(_) if elegido.kind == "source" => print_impact(lineage, elegido),
+            Some(_) if elegido.kind == "source" => {
+                print_impact(lineage, elegido, &dag.spec().name, otros)
+            }
             Some(_) => {
                 print_columns(elegido);
                 if !elegido.indirect.is_empty() {
@@ -205,7 +212,12 @@ fn print_indirect(nodos: &[NodeLineage]) {
 }
 
 /// Las columnas de un origen y lo que pasa con cada una.
-fn print_impact(todo: &[NodeLineage], origen: &NodeLineage) {
+fn print_impact(
+    todo: &[NodeLineage],
+    origen: &NodeLineage,
+    pipeline: &str,
+    otros: &[(String, Vec<NodeLineage>)],
+) {
     let columnas = origen.columns.as_deref().unwrap_or_default();
     let nombre = columnas
         .iter()
@@ -218,13 +230,12 @@ fn print_impact(todo: &[NodeLineage], origen: &NodeLineage) {
         .max()
         .unwrap_or(0);
     for c in columnas {
-        let impacto = orch_core::lineage::impact(
-            todo,
-            &NodeColumn {
-                node: origen.node.clone(),
-                column: c.column.clone(),
-            },
-        );
+        let columna = NodeColumn::new(&origen.node, &c.column);
+        let mut impacto = orch_core::lineage::impact(todo, &columna);
+        // Y las salidas de los pipelines que leen lo que escribe éste.
+        impacto.outputs.extend(orch_core::lineage::impacto_en_otros(
+            otros, pipeline, &columna,
+        ));
         let mut partes = Vec::new();
         if impacto.outputs.is_empty() {
             partes.push("no llega a ninguna salida".to_string());

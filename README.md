@@ -4,7 +4,7 @@ Plataforma local de orquestación y transporte de datos. La especificación
 completa está en [doc.md](doc.md); el desglose por fases, en
 [docs/PLAN.md](docs/PLAN.md).
 
-**Estado: Fases 0 a 5 completas.** Motor de DAG con ejecución en
+**Estado: Fases 0 a 6 completas.** Motor de DAG con ejecución en
 streaming, transformaciones SQL sobre DataFusion, conectores
 CSV/Parquet/PostgreSQL/REST, historial en DuckDB y demonio con disparadores
 cron, más la aplicación de escritorio (Tauri) con el lienzo del pipeline, que
@@ -436,7 +436,10 @@ alerts:
   comparar. La mediana y no la media, para que una rarísima no mueva la vara.
 
 Cada alerta sale una sola vez por ejecución y llega a la terminal (o a la
-ventana), al historial y al webhook. Un webhook caído se cuenta pero no
+ventana), al historial y al webhook. En la aplicación, además, si la ventana
+no está al frente —detrás de otra, minimizada— avisa el sistema con una
+notificación («api-de-pedidos lleva rato sin moverse»); con la ventana
+delante no, porque el aviso ya está en ella. Un webhook caído se cuenta pero no
 impide el resto, y nada de esto frena la ejecución: el vigilante es otro
 oyente del canal de eventos.
 
@@ -632,9 +635,23 @@ leer_pedidos [source:csv] · 4 columnas
   siguen sobre el plan lógico de DataFusion: joins, `UNION`, CTE, ventanas y
   subconsultas escalares. Lo que no sabe seguir sale como *incierta*, sin
   inventar orígenes.
+- **Sigue los ficheros.** Un origen que lee lo que escribe un sink —de su
+  mismo pipeline (escribir un Parquet y releerlo), o de otro de la misma
+  carpeta— hereda las columnas y los orígenes de ese sink, aunque el fichero
+  no exista todavía. Lo de otro pipeline sale con su nombre delante:
+
+  ```
+  escribir [sink:csv] · 2 columnas
+    city   Utf8     ← filtra-clientes:leer.city
+    gasto  Float64  ← filtra-clientes:leer.spend  agregada
+  ```
+
+  y el impacto de una columna llega hasta las salidas de los pipelines que la
+  leen después. El vínculo es la ruta (`path`); las tablas de PostgreSQL no
+  se siguen todavía.
 - **Donde no se puede saber, lo dice.** Un nodo que no declara su esquema
-  —un origen cuyo fichero aún no existe, un plugin— corta la cadena, y lo
-  que va detrás dice en qué nodo se cortó.
+  —un origen cuyo fichero no escribe nadie de la carpeta y aún no existe, un
+  plugin— corta la cadena, y lo que va detrás dice en qué nodo se cortó.
 
 En la aplicación, el inspector de cada nodo tiene una sección *Columnas* con
 el tipo y el origen de cada una; en un origen, adónde llega cada columna. Cada
@@ -840,7 +857,18 @@ orch worker --listen 0.0.0.0:50100 --ca ca.pem --cert a.pem --key a.key --dir /d
 
 # Y donde se lanza, el pipeline con el clúster
 orch run repartido.yaml --cluster cluster.yaml --follow
+
+# También se comprueba (lo de aquí entero; lo de cada worker, allí) y se
+# programa: el demonio dispara los repartidos igual que los demás
+orch validate repartido.yaml --cluster cluster.yaml
+orch daemon --dir pipelines --cluster cluster.yaml
 ```
+
+`--cluster` también se puede dar con la variable `ORCH_CLUSTER`, que es como
+lo recoge la aplicación: con ella, el botón *Ejecutar* reparte los pipelines
+que llevan `worker:`; sin ella, la lista los marca y dice qué falta. Un
+coordinador sirve a todas las ejecuciones a la vez —las del demonio, las de
+la ventana— con los eventos de cada una aparte.
 
 ```
 ▶ clientes-repartido (8 nodos)
@@ -1155,13 +1183,10 @@ también hace usable el ciclo de desarrollo.
   memoria. Usa `memory_limit_mb` en esos nodos.
 - **No hay deshacer en el lienzo.** Cada cambio se escribe al momento en el
   fichero, así que lo que haya en git es la red de seguridad.
-- **Las alertas no llegan como notificación del sistema.** En la aplicación
-  se ven dentro de la ventana; para enterarse con ella cerrada, el webhook.
-- **El lineage se para en los orígenes.** Si un origen lee un fichero que
-  escribe otro pipeline (o un sink del mismo), no se sigue hasta allí.
-- **Un pipeline repartido sólo se lanza con `orch run --cluster`.** El
-  demonio y la aplicación todavía no saben repartir; y una espera `after`
-  entre nodos de máquinas distintas no se admite.
+- **El lineage sigue ficheros, no tablas.** Un origen de PostgreSQL que lee
+  la tabla que carga otro pipeline no se enlaza con él.
+- **Una espera `after` entre nodos de máquinas distintas no se admite** en
+  un pipeline repartido.
 - **Los plugins sólo pueden ser transformaciones.** Un origen o un destino
   necesitan red o disco, y darles ese acceso a un plugin pide decidir antes
   cómo se conceden los permisos.

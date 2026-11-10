@@ -470,6 +470,8 @@ export function Diseno({ pipeline, onEditado }: Props) {
       // Mientras llega lo nuevo se sigue viendo lo anterior del mismo
       // pipeline: editar un campo no debe hacer parpadear la sección.
       nodos: actual?.clave.startsWith(`${path}#`) ? actual.nodos : null,
+      pipeline: actual?.clave.startsWith(`${path}#`) ? actual.pipeline : null,
+      otros: actual?.clave.startsWith(`${path}#`) ? actual.otros : [],
       error: null,
       cargando: true,
     }));
@@ -480,8 +482,8 @@ export function Diseno({ pipeline, onEditado }: Props) {
         actual?.clave === clave ? { clave, ...resto, cargando: false } : actual,
       );
     api.pipelineLineage(path).then(
-      (nodos) => llegada({ nodos, error: null }),
-      (e) => llegada({ nodos: null, error: String(e) }),
+      (r) => llegada({ nodos: r.nodes, pipeline: r.pipeline, otros: r.otros, error: null }),
+      (e) => llegada({ nodos: null, pipeline: null, otros: [], error: String(e) }),
     );
   }, [hayInspector, revisionActual, pipeline.path]);
 

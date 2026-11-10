@@ -1188,6 +1188,17 @@ select.control {
   color: var(--texto-secundario);
 }
 
+/* Una columna de otro pipeline de la carpeta: se nombra, pero no está en
+   este lienzo, así que no es un botón. */
+.ficha--fuera {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 8px;
+  overflow-wrap: anywhere;
+  border: 1px dashed var(--separador);
+  background: transparent;
+}
+
 .ficha--enlace:hover .ficha__nodo {
   color: inherit;
 }

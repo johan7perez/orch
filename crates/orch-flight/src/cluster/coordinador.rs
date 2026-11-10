@@ -42,6 +42,23 @@ pub struct Coordinador {
     cluster: ClusterConfig,
     cliente: ClientTlsConfig,
     eventos: broadcast::Sender<RunEvent>,
+    /// El servicio que sirve a los workers las aristas que salen de aquí.
+    /// Uno para todas las ejecuciones, abierto la primera vez que hace falta
+    /// y cerrado al soltar el coordinador: dos ejecuciones a la vez (en el
+    /// demonio, en la aplicación) no pueden pelearse por el mismo puerto.
+    servidor: tokio::sync::Mutex<Option<ServidorLocal>>,
+}
+
+struct ServidorLocal {
+    parar: Option<oneshot::Sender<()>>,
+}
+
+impl Drop for ServidorLocal {
+    fn drop(&mut self) {
+        if let Some(parar) = self.parar.take() {
+            let _ = parar.send(());
+        }
+    }
 }
 
 impl Coordinador {
@@ -58,10 +75,12 @@ impl Coordinador {
             cluster,
             cliente,
             eventos,
+            servidor: tokio::sync::Mutex::new(None),
         })
     }
 
-    /// Los eventos de la ejecución entera, como los de un [`Executor`].
+    /// Los eventos de lo que se lance con [`run`](Self::run), como los de un
+    /// [`Executor`].
     pub fn subscribe(&self) -> broadcast::Receiver<RunEvent> {
         self.eventos.subscribe()
     }
@@ -70,63 +89,27 @@ impl Coordinador {
     /// `base` es la carpeta del pipeline: contra ella se resuelven las rutas
     /// de lo que corre aquí.
     pub async fn run(&self, spec: &PipelineSpec, base: &Path) -> Result<RunReport> {
+        self.run_con(spec, base, &self.eventos).await
+    }
+
+    /// Como [`run`](Self::run), publicando los eventos en `eventos`: para
+    /// quien lanza varias a la vez y quiere los oyentes de cada una aparte.
+    pub async fn run_con(
+        &self,
+        spec: &PipelineSpec,
+        base: &Path,
+        eventos: &broadcast::Sender<RunEvent>,
+    ) -> Result<RunReport> {
         let run_id = uuid::Uuid::new_v4().to_string();
         let inicio = Instant::now();
-        let partes = dividir(
-            spec,
-            &run_id,
-            &self.cluster.workers,
-            self.cluster.url.as_deref(),
-            self.cluster.wait,
-        )?;
-
-        // Lo de aquí se prepara antes de arrancar nada: un error de config
-        // sale sin haber movido una fila en ninguna máquina.
-        let mut local: Option<Dag> = None;
-        let mut sirve_aqui = false;
-        for parte in &partes {
-            if parte.donde != Donde::Local {
-                continue;
-            }
-            sirve_aqui = parte.spec.nodes.iter().any(|n| {
-                matches!(&n.kind, NodeKind::Sink { connector, .. } if connector == "cluster_out")
-            });
-            let mut aqui = parte.spec.clone();
-            aqui.expand_secrets()?;
-            aqui.resolve_paths(base);
-            orch_core::pushdown::apply(&mut aqui, &self.registry);
-            local = Some(Dag::build(aqui)?);
+        let (local, sirve_aqui, partes) = self.preparar(spec, &run_id, base)?;
+        let mut local = local;
+        if sirve_aqui {
+            self.servir_aristas().await?;
         }
 
-        let servidor = if sirve_aqui {
-            let listen = self.cluster.listen.as_deref().ok_or_else(|| {
-                OrchError::Validation(
-                    "algún nodo que corre aquí alimenta a un worker: el coordinador tiene que \
-                     escuchar (`listen` en el fichero del clúster)"
-                        .into(),
-                )
-            })?;
-            let escucha = TcpListener::bind(listen).await.map_err(|err| {
-                OrchError::Other(format!(
-                    "el coordinador no pudo escuchar en `{listen}`: {err}"
-                ))
-            })?;
-            let (parar, parada) = oneshot::channel::<()>();
-            let tarea = servir(
-                Servicio::solo_aristas(Arc::clone(&self.aristas)),
-                &self.cluster.tls,
-                escucha,
-                async {
-                    let _ = parada.await;
-                },
-            )?;
-            Some((tarea, parar))
-        } else {
-            None
-        };
-
         let nodos: usize = partes.iter().map(|p| p.spec.nodes.len()).sum();
-        let _ = self.eventos.send(RunEvent::RunStarted {
+        let _ = eventos.send(RunEvent::RunStarted {
             run_id: run_id.clone(),
             pipeline: spec.name.clone(),
             nodes: nodos,
@@ -135,7 +118,7 @@ impl Coordinador {
         // Los eventos de todas las partes pasan por aquí: se quitan los
         // arranques y finales de cada parte y se junta el progreso.
         let (tx, mut rx) = mpsc::channel::<RunEvent>(EVENT_CHANNEL_CAPACITY);
-        let eventos = self.eventos.clone();
+        let publicar = eventos.clone();
         let id = run_id.clone();
         // Los nodos que no están en el fichero son las aristas entre
         // máquinas: se presentan como `edge`, no como orígenes o sinks, para
@@ -155,7 +138,7 @@ impl Coordinador {
                         for n in nodes {
                             progreso.insert(n.node.clone(), n);
                         }
-                        let _ = eventos.send(RunEvent::Progress {
+                        let _ = publicar.send(RunEvent::Progress {
                             run_id: id.clone(),
                             elapsed_ms: inicio.elapsed().as_millis() as u64,
                             nodes: progreso.values().cloned().collect(),
@@ -173,7 +156,7 @@ impl Coordinador {
                         } else {
                             kind
                         };
-                        let _ = eventos.send(RunEvent::NodeStarted {
+                        let _ = publicar.send(RunEvent::NodeStarted {
                             run_id,
                             node,
                             kind,
@@ -182,7 +165,7 @@ impl Coordinador {
                         });
                     }
                     otro => {
-                        let _ = eventos.send(otro);
+                        let _ = publicar.send(otro);
                     }
                 }
             }
@@ -237,14 +220,10 @@ impl Coordinador {
             }
         }
         let _ = juntar.await;
-        if let Some((tarea, parar)) = servidor {
-            let _ = parar.send(());
-            let _ = tokio::time::timeout(Duration::from_secs(10), tarea).await;
-        }
 
         let elapsed_ms = inicio.elapsed().as_millis() as u64;
         let succeeded = fallo.is_none() && informes.iter().all(|i| i.succeeded);
-        let _ = self.eventos.send(RunEvent::RunFinished {
+        let _ = eventos.send(RunEvent::RunFinished {
             run_id: run_id.clone(),
             pipeline: spec.name.clone(),
             succeeded,
@@ -280,6 +259,90 @@ impl Coordinador {
             elapsed_ms,
             nodes,
         })
+    }
+}
+
+impl Coordinador {
+    /// Parte el pipeline y prepara lo que corre aquí, sin arrancar nada: un
+    /// error de config sale sin haber movido una fila en ninguna máquina.
+    /// Devuelve la parte local, si escucha para servir aristas, y las partes.
+    fn preparar(
+        &self,
+        spec: &PipelineSpec,
+        run_id: &str,
+        base: &Path,
+    ) -> Result<(Option<Dag>, bool, Vec<super::Parte>)> {
+        let partes = dividir(
+            spec,
+            run_id,
+            &self.cluster.workers,
+            self.cluster.url.as_deref(),
+            self.cluster.wait,
+        )?;
+        let mut local: Option<Dag> = None;
+        let mut sirve_aqui = false;
+        for parte in &partes {
+            if parte.donde != Donde::Local {
+                // Lo de los workers se valida allí, con sus conectores y sus
+                // secretos; aquí, sólo que tenga forma de pipeline.
+                Dag::build(parte.spec.clone())?;
+                continue;
+            }
+            sirve_aqui = parte.spec.nodes.iter().any(|n| {
+                matches!(&n.kind, NodeKind::Sink { connector, .. } if connector == "cluster_out")
+            });
+            let mut aqui = parte.spec.clone();
+            aqui.expand_secrets()?;
+            aqui.resolve_paths(base);
+            orch_core::pushdown::apply(&mut aqui, &self.registry);
+            local = Some(Dag::build(aqui)?);
+        }
+        if sirve_aqui && self.cluster.listen.is_none() {
+            return Err(OrchError::Validation(
+                "algún nodo que corre aquí alimenta a un worker: el coordinador tiene que \
+                 escuchar (`listen` en el fichero del clúster)"
+                    .into(),
+            ));
+        }
+        Ok((local, sirve_aqui, partes))
+    }
+
+    /// Comprueba un pipeline repartido sin ejecutarlo: que se puede partir,
+    /// que cada parte es un pipeline, y lo de aquí entero (conectores,
+    /// columnas). Lo de cada worker lo comprueba su worker al ejecutar.
+    pub async fn validar(&self, spec: &PipelineSpec, base: &Path) -> Result<()> {
+        let (local, _, _) = self.preparar(spec, "validar", base)?;
+        if let Some(dag) = local {
+            Executor::new(Arc::clone(&self.registry))
+                .prepare(&dag)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Abre, si no lo estaba ya, el servicio que sirve las aristas de aquí.
+    async fn servir_aristas(&self) -> Result<()> {
+        let mut servidor = self.servidor.lock().await;
+        if servidor.is_some() {
+            return Ok(());
+        }
+        let listen = self.cluster.listen.as_deref().unwrap_or_default();
+        let escucha = TcpListener::bind(listen).await.map_err(|err| {
+            OrchError::Other(format!(
+                "el coordinador no pudo escuchar en `{listen}`: {err}"
+            ))
+        })?;
+        let (parar, parada) = oneshot::channel::<()>();
+        servir(
+            Servicio::solo_aristas(Arc::clone(&self.aristas)),
+            &self.cluster.tls,
+            escucha,
+            async {
+                let _ = parada.await;
+            },
+        )?;
+        *servidor = Some(ServidorLocal { parar: Some(parar) });
+        Ok(())
     }
 }
 

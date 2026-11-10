@@ -61,10 +61,7 @@ fn columns(node: &NodeLineage) -> Vec<String> {
 }
 
 fn origin(node: &str, column: &str) -> NodeColumn {
-    NodeColumn {
-        node: node.to_string(),
-        column: column.to_string(),
-    }
+    NodeColumn::new(node, column)
 }
 
 fn write(dir: &TempDir, name: &str, contents: &str) -> String {
@@ -462,4 +459,195 @@ fn encadenar_pasos_se_queda_con_el_mas_fuerte() {
     assert_eq!(Aggregated.then(Computed), Aggregated);
     assert_eq!(Copy.then(Copy), Copy);
     assert_eq!(Aggregated.then(Unknown), Unknown);
+}
+
+// --- siguiendo los ficheros ---------------------------------------------------
+
+fn columnas_de(todo: &[NodeLineage], id: &str) -> Vec<String> {
+    columns(node(todo, id))
+}
+
+#[tokio::test]
+async fn un_origen_que_lee_lo_que_escribe_su_propio_pipeline_hereda_sus_origenes() {
+    // `examples/pipelines/parquet.yaml`: escribe un Parquet y lo vuelve a
+    // leer, sólo dos columnas, después de escribirlo.
+    let dir = TempDir::new().expect("tempdir");
+    let clientes = write(&dir, "customers.csv", CLIENTES);
+    let intermedio = temp_path(&dir, "clientes.parquet");
+    let out = temp_path(&dir, "out.csv");
+    let todo = lineage_of(&format!(
+        r#"
+name: parquet
+nodes:
+  - {{ id: leer_csv, type: source, connector: csv, config: {{ path: "{clientes}" }} }}
+  - {{ id: escribir_parquet, type: sink, connector: parquet, config: {{ path: "{intermedio}" }} }}
+  - id: releer
+    type: source
+    connector: parquet
+    after: [escribir_parquet]
+    config: {{ path: "{intermedio}", columns: [city, segment] }}
+  - id: por_ciudad
+    type: transform
+    op: aggregate
+    config: {{ group_by: [city, segment], aggregates: {{ clientes: "count(*)" }} }}
+  - {{ id: escribir, type: sink, connector: csv, config: {{ path: "{out}" }} }}
+edges:
+  - {{ from: leer_csv, to: escribir_parquet }}
+  - {{ from: releer, to: por_ciudad }}
+  - {{ from: por_ciudad, to: escribir }}
+"#
+    ))
+    .await;
+
+    // El Parquet aún no existe, y aun así se sabe: las columnas que lee
+    // `releer` son las que escribe `escribir_parquet`, recortadas.
+    assert_eq!(
+        columnas_de(&todo, "releer"),
+        vec![
+            "city ← leer_csv.city (copia)",
+            "segment ← leer_csv.segment (copia)"
+        ]
+    );
+    assert_eq!(
+        columnas_de(&todo, "escribir"),
+        vec![
+            "city ← leer_csv.city (copia)",
+            "segment ← leer_csv.segment (copia)",
+            "clientes ←  (agregada)",
+        ]
+    );
+}
+
+fn productor_yaml(clientes: &str, intermedio: &str) -> String {
+    format!(
+        r#"
+name: filtra-clientes
+nodes:
+  - {{ id: leer, type: source, connector: csv, config: {{ path: "{clientes}" }} }}
+  - {{ id: relevantes, type: transform, op: filter, config: {{ where: "spend >= 500" }} }}
+  - {{ id: con_iva, type: transform, op: derive, config: {{ columns: {{ total: "spend * 1.18" }} }} }}
+  - {{ id: guardar, type: sink, connector: csv, config: {{ path: "{intermedio}" }} }}
+edges:
+  - {{ from: leer, to: relevantes }}
+  - {{ from: relevantes, to: con_iva }}
+  - {{ from: con_iva, to: guardar }}
+"#
+    )
+}
+
+fn consumidor_yaml(intermedio: &str, out: &str) -> String {
+    format!(
+        r#"
+name: resume-por-ciudad
+nodes:
+  - {{ id: recoger, type: source, connector: csv, config: {{ path: "{intermedio}" }} }}
+  - id: por_ciudad
+    type: transform
+    op: aggregate
+    config: {{ group_by: [city], aggregates: {{ gasto: "sum(total)" }} }}
+  - {{ id: escribir, type: sink, connector: csv, config: {{ path: "{out}" }} }}
+edges:
+  - {{ from: recoger, to: por_ciudad }}
+  - {{ from: por_ciudad, to: escribir }}
+"#
+    )
+}
+
+#[tokio::test]
+async fn una_columna_se_sigue_de_un_pipeline_a_otro_por_su_fichero() {
+    let dir = TempDir::new().expect("tempdir");
+    let clientes = write(&dir, "customers.csv", CLIENTES);
+    let intermedio = temp_path(&dir, "relevantes.csv");
+    let out = temp_path(&dir, "out.csv");
+
+    // Se pasan al revés de como corren: el orden lo deciden los ficheros.
+    let pipelines = vec![
+        (
+            "resume-por-ciudad".to_string(),
+            dag(&consumidor_yaml(&intermedio, &out)),
+        ),
+        (
+            "filtra-clientes".to_string(),
+            dag(&productor_yaml(&clientes, &intermedio)),
+        ),
+    ];
+    let todos = orch_core::lineage::de_varios(&Executor::new(registry()), &pipelines).await;
+    let consumidor = todos[0].as_ref().expect("lineage del consumidor");
+
+    // `gasto` sale de `total`, que en el otro pipeline sale de `spend`:
+    // calculada allí, agregada aquí.
+    assert_eq!(
+        columnas_de(consumidor, "escribir"),
+        vec![
+            "city ← filtra-clientes:leer.city (copia)",
+            "gasto ← filtra-clientes:leer.spend (agregada)",
+        ]
+    );
+    // Y el impacto de `spend` en el productor llega hasta la salida del
+    // consumidor.
+    let spend = NodeColumn {
+        pipeline: Some("filtra-clientes".into()),
+        ..origin("leer", "spend")
+    };
+    assert!(consumidor
+        .iter()
+        .flat_map(|n| n.columns.iter().flatten())
+        .any(|c| c.column == "gasto" && c.origins.contains(&spend)));
+}
+
+#[tokio::test]
+async fn dos_pipelines_que_se_leen_mutuamente_no_cuelgan_nada() {
+    let dir = TempDir::new().expect("tempdir");
+    let a = temp_path(&dir, "a.csv");
+    let b = temp_path(&dir, "b.csv");
+    let uno = |lee: &str, escribe: &str| {
+        dag(&format!(
+            r#"
+name: x
+nodes:
+  - {{ id: leer, type: source, connector: csv, config: {{ path: "{lee}" }} }}
+  - {{ id: escribir, type: sink, connector: csv, config: {{ path: "{escribe}" }} }}
+edges:
+  - {{ from: leer, to: escribir }}
+"#
+        ))
+    };
+    let pipelines = vec![
+        ("uno".to_string(), uno(&a, &b)),
+        ("dos".to_string(), uno(&b, &a)),
+    ];
+    let todos = orch_core::lineage::de_varios(&Executor::new(registry()), &pipelines).await;
+    // Ninguno de los dos ficheros existe: no se sabe, pero se dice y termina.
+    assert_eq!(todos.len(), 2);
+    assert!(todos.iter().all(|r| r.is_ok()));
+}
+
+#[tokio::test]
+async fn validar_no_usa_el_esquema_prestado() {
+    // Prestar el esquema del sink es sólo para el lineage: al validar o
+    // ejecutar manda lo que hay en disco.
+    let dir = TempDir::new().expect("tempdir");
+    let clientes = write(&dir, "customers.csv", CLIENTES);
+    let intermedio = temp_path(&dir, "clientes.parquet");
+    let yaml = format!(
+        r#"
+name: x
+nodes:
+  - {{ id: leer_csv, type: source, connector: csv, config: {{ path: "{clientes}" }} }}
+  - {{ id: escribir_parquet, type: sink, connector: parquet, config: {{ path: "{intermedio}" }} }}
+  - {{ id: releer, type: source, connector: parquet, after: [escribir_parquet], config: {{ path: "{intermedio}" }} }}
+  - {{ id: columna_que_no_existe, type: transform, op: select, config: {{ columns: [no_existe] }} }}
+  - {{ id: tirar, type: sink, connector: "null" }}
+edges:
+  - {{ from: leer_csv, to: escribir_parquet }}
+  - {{ from: releer, to: columna_que_no_existe }}
+  - {{ from: columna_que_no_existe, to: tirar }}
+"#
+    );
+    // Con el esquema prestado, el `select` fallaría en `validate`; sin él
+    // (el fichero no existe aún), no se puede comprobar y no falla.
+    Executor::new(registry())
+        .prepare(&dag(&yaml))
+        .await
+        .expect("validar no toma prestado el esquema del sink");
 }

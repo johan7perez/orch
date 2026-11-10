@@ -16,6 +16,10 @@ import type { ColumnLineage, Derivacion, NodeColumn, NodeLineage } from "../api"
 export interface Linaje {
   /** Lo último que se calculó, mientras llega lo nuevo. */
   nodos: NodeLineage[] | null;
+  /** El nombre de este pipeline, como lo nombran los demás. */
+  pipeline: string | null;
+  /** Las salidas de los demás pipelines de la carpeta: para el impacto. */
+  otros: { pipeline: string; nodes: NodeLineage[] }[];
   error: string | null;
   cargando: boolean;
 }
@@ -61,6 +65,7 @@ export function Columnas({ nodo, linaje, onIrA }: Props) {
                 nodo={propio}
                 columna={columna}
                 todos={todos}
+                linaje={linaje}
                 onIrA={onIrA}
               />
             ))}
@@ -80,11 +85,13 @@ function Columna({
   nodo,
   columna,
   todos,
+  linaje,
   onIrA,
 }: {
   nodo: NodeLineage;
   columna: ColumnLineage;
   todos: NodeLineage[];
+  linaje: Linaje;
   onIrA: (nodo: string) => void;
 }) {
   const como = columna.derivation === "copy" ? null : COMO[columna.derivation];
@@ -104,7 +111,12 @@ function Columna({
         <span className="columna__tipo">{columna.data_type}</span>
       </div>
       {nodo.kind === "source" ? (
-        <Destinos origen={{ node: nodo.node, column: columna.column }} todos={todos} onIrA={onIrA} />
+        <Destinos
+          origen={{ node: nodo.node, column: columna.column }}
+          todos={todos}
+          linaje={linaje}
+          onIrA={onIrA}
+        />
       ) : columna.origins.length === 0 ? (
         <p className="columna__nada">no lee ninguna columna</p>
       ) : (
@@ -118,13 +130,19 @@ function Columna({
 function Destinos({
   origen,
   todos,
+  linaje,
   onIrA,
 }: {
   origen: NodeColumn;
   todos: NodeLineage[];
+  linaje: Linaje;
   onIrA: (nodo: string) => void;
 }) {
   const { salidas, usadaEn } = impacto(todos, origen);
+  // Y las salidas de los pipelines que leen lo que escribe éste.
+  if (linaje.pipeline) {
+    salidas.push(...impactoEnOtros(linaje.otros, linaje.pipeline, origen));
+  }
   if (salidas.length === 0 && usadaEn.length === 0) {
     return <p className="columna__nada">no llega a ninguna salida</p>;
   }
@@ -167,17 +185,31 @@ function Referencias({
           {flecha}
         </span>
       ) : null}
-      {columnas.map((c) => (
-        <button
-          key={`${c.node}.${c.column}`}
-          className="ficha ficha--enlace"
-          title={`Ir a ${c.node}`}
-          onClick={() => onIrA(c.node)}
-        >
-          <span className="ficha__nodo">{c.node}.</span>
-          {c.column}
-        </button>
-      ))}
+      {columnas.map((c) =>
+        // Lo de otro pipeline no está en este lienzo: se nombra, sin saltar.
+        c.pipeline ? (
+          <span
+            key={`${c.pipeline}:${c.node}.${c.column}`}
+            className="ficha ficha--fuera"
+            title={`En el pipeline ${c.pipeline}`}
+          >
+            <span className="ficha__nodo">
+              {c.pipeline}:{c.node}.
+            </span>
+            {c.column}
+          </span>
+        ) : (
+          <button
+            key={`${c.node}.${c.column}`}
+            className="ficha ficha--enlace"
+            title={`Ir a ${c.node}`}
+            onClick={() => onIrA(c.node)}
+          >
+            <span className="ficha__nodo">{c.node}.</span>
+            {c.column}
+          </button>
+        ),
+      )}
     </div>
   );
 }
@@ -257,9 +289,30 @@ function Desconocido({
   );
 }
 
+/** A qué salidas de otros pipelines llega una columna de un origen de éste. */
+export function impactoEnOtros(
+  otros: { pipeline: string; nodes: NodeLineage[] }[],
+  pipeline: string,
+  origen: NodeColumn,
+): NodeColumn[] {
+  const salidas: NodeColumn[] = [];
+  for (const otro of otros) {
+    for (const n of otro.nodes) {
+      for (const c of n.columns ?? []) {
+        const llega = c.origins.some(
+          (o) => o.pipeline === pipeline && o.node === origen.node && o.column === origen.column,
+        );
+        if (llega) salidas.push({ pipeline: otro.pipeline, node: n.node, column: c.column });
+      }
+    }
+  }
+  return salidas;
+}
+
 /** A qué salidas llega una columna de un origen y qué nodos la usan sin pasarla. */
 export function impacto(todos: NodeLineage[], origen: NodeColumn) {
-  const es = (c: NodeColumn) => c.node === origen.node && c.column === origen.column;
+  const es = (c: NodeColumn) =>
+    !c.pipeline && c.node === origen.node && c.column === origen.column;
   const salidas: NodeColumn[] = [];
   const usadaEn: string[] = [];
   for (const n of todos) {

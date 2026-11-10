@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use orch_core::Registry;
+use orch_flight::cluster::{ClusterConfig, Coordinador};
 use orch_store::Store;
 
 /// Todo lo que la ventana necesita para trabajar.
@@ -16,6 +17,10 @@ pub struct AppState {
     registry: RwLock<Arc<Registry>>,
     /// Los plugins de la carpeta que no se pudieron cargar, y por qué.
     plugin_warnings: Mutex<Vec<String>>,
+    /// El coordinador del clúster de `ORCH_CLUSTER`, si lo hay: con él se
+    /// ejecutan los pipelines que reparten nodos entre máquinas. Se rehace
+    /// con el registro, porque lleva su propia copia.
+    coordinador: RwLock<Option<Arc<Coordinador>>>,
     pub store: Arc<Store>,
     /// Directorio de pipelines que se está mirando. Cambiable desde la UI.
     directory: Mutex<PathBuf>,
@@ -23,10 +28,12 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(store: Store, directory: PathBuf) -> Self {
-        let (registry, avisos) = full_registry(&directory);
+        let (registry, mut avisos) = full_registry(&directory);
+        let coordinador = coordinador(&directory, &mut avisos);
         Self {
             registry: RwLock::new(Arc::new(registry)),
             plugin_warnings: Mutex::new(avisos),
+            coordinador: RwLock::new(coordinador),
             store: Arc::new(store),
             directory: Mutex::new(directory),
         }
@@ -41,6 +48,14 @@ impl AppState {
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         )
+    }
+
+    /// El coordinador vigente, si hay clúster.
+    pub fn coordinador(&self) -> Option<Arc<Coordinador>> {
+        self.coordinador
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub fn plugin_warnings(&self) -> Vec<String> {
@@ -65,11 +80,15 @@ impl AppState {
         *current = path.to_path_buf();
         drop(current);
 
-        let (registry, avisos) = full_registry(path);
+        let (registry, mut avisos) = full_registry(path);
         *self
             .registry
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(registry);
+        *self
+            .coordinador
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = coordinador(path, &mut avisos);
         *self
             .plugin_warnings
             .lock()
@@ -89,6 +108,28 @@ pub fn full_registry(directory: &Path) -> (Registry, Vec<String>) {
     let avisos =
         orch_wasm::registrar_carpeta(&mut registry, &orch_wasm::carpeta_de_plugins(directory));
     (registry, avisos)
+}
+
+/// El coordinador del clúster que diga `ORCH_CLUSTER`. Un fichero de clúster
+/// que no vale se avisa como un plugin que no carga: los pipelines que no
+/// reparten nada siguen funcionando.
+fn coordinador(directory: &Path, avisos: &mut Vec<String>) -> Option<Arc<Coordinador>> {
+    let fichero = std::env::var_os("ORCH_CLUSTER")?;
+    let fichero = PathBuf::from(fichero);
+    let resultado = ClusterConfig::from_path(&fichero).and_then(|config| {
+        let (registry, _) = full_registry(directory);
+        Coordinador::new(registry, config)
+    });
+    match resultado {
+        Ok(coordinador) => Some(Arc::new(coordinador)),
+        Err(err) => {
+            avisos.push(format!(
+                "el clúster de `ORCH_CLUSTER` ({}) no se pudo cargar: {err}",
+                fichero.display()
+            ));
+            None
+        }
+    }
 }
 
 /// Dónde buscar pipelines la primera vez.

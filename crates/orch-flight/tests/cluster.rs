@@ -455,3 +455,78 @@ edges:
     let error = resultado.unwrap_err().to_string();
     assert!(error.contains("worker `a`"), "{error}");
 }
+
+// --- Un coordinador para varias ejecuciones (el demonio, la aplicación) -------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn dos_ejecuciones_a_la_vez_no_se_mezclan() {
+    let pki = Pki::nueva();
+    let a = worker(&pki).await;
+    let recogido = Recogido::default();
+    // Con `listen`: las dos tienen aristas que salen de aquí, y el servidor
+    // que las sirve tiene que ser uno para las dos.
+    let coordinador = Coordinador::new(
+        comun::registro(&recogido),
+        cluster(&pki, &[("a", &a)], Some(puerto())),
+    )
+    .unwrap();
+    let contar = |filas: u64| {
+        spec(&format!(
+            r#"
+name: contar-{filas}
+nodes:
+  - {{ id: generar, type: source, connector: generator, config: {{ rows: {filas}, with_text: false }} }}
+  - {{ id: contar, type: transform, op: sql, worker: a, config: {{ query: "SELECT count(*) AS id FROM generar" }} }}
+  - {{ id: guardar, type: sink, connector: guardar }}
+edges:
+  - {{ from: generar, to: contar }}
+  - {{ from: contar, to: guardar }}
+"#
+        ))
+    };
+    let (uno, dos) = (contar(1_000), contar(2_000));
+    let (tx1, _) = tokio::sync::broadcast::channel(4096);
+    let (tx2, _) = tokio::sync::broadcast::channel(4096);
+    let (mut rx1, mut rx2) = (tx1.subscribe(), tx2.subscribe());
+    let base = PathBuf::from(".");
+
+    let (r1, r2) = tokio::join!(
+        coordinador.run_con(&uno, &base, &tx1),
+        coordinador.run_con(&dos, &base, &tx2)
+    );
+    let (r1, r2) = (r1.unwrap(), r2.unwrap());
+    assert!(r1.succeeded && r2.succeeded, "{r1:?}\n{r2:?}");
+    let mut cuentas = ids(&recogido);
+    cuentas.sort_unstable();
+    assert_eq!(cuentas, [1_000, 2_000]);
+
+    // Cada una sólo ve lo suyo: las alertas de una no pueden saltar con la
+    // otra.
+    for (rx, informe) in [(&mut rx1, &r1), (&mut rx2, &r2)] {
+        let mut vistos = 0;
+        while let Ok(evento) = rx.try_recv() {
+            assert_eq!(evento.run_id(), informe.run_id);
+            vistos += 1;
+        }
+        assert!(vistos > 0);
+    }
+}
+
+#[tokio::test]
+async fn el_motor_decide_por_lo_que_dice_el_pipeline() {
+    use orch_flight::cluster::Motor;
+    let registry = Arc::new(comun::registro(&Recogido::default()));
+    let local = "name: x\nnodes:\n  - { id: g, type: source, connector: generator, config: { rows: 1 } }\n  - { id: d, type: sink, connector: \"null\" }\nedges:\n  - { from: g, to: d }\n";
+
+    // Sin `worker`, el motor de siempre, haya clúster o no.
+    let motor = Motor::para(&PathBuf::from("x.yaml"), local, Arc::clone(&registry), None).unwrap();
+    assert!(matches!(motor, Motor::Local { .. }));
+
+    // Con `worker` y sin clúster, no se ejecuta en la máquina equivocada.
+    let repartido = local.replace("connector: \"null\"", "connector: \"null\", worker: a");
+    let error = Motor::para(&PathBuf::from("x.yaml"), &repartido, registry, None)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("ORCH_CLUSTER"), "{error}");
+}

@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use orch_core::{Dag, Executor, NodeLineage, PipelineSpec};
+use orch_core::{Dag, NodeLineage, PipelineSpec};
 use orch_store::versions::{PipelineHistory, VersionDiff, VersionRef};
 use orch_store::{AlertRow, EventRow, NodeRow, ProgressRow, RunSummary, RunVersion};
 use serde::Serialize;
@@ -129,6 +129,17 @@ pub async fn workspace(state: State<'_, AppState>) -> Response<Workspace> {
 /// mientras se edita en el lienzo, pasar por estados intermedios no válidos
 /// es lo normal, y la barra no debe quedarse diciendo «0 nodos».
 fn inspect(state: &AppState, path: &std::path::Path) -> (usize, Option<String>, Option<String>) {
+    // Un pipeline repartido se mira tal y como está escrito: sus secretos y
+    // sus conectores son de las máquinas donde corre cada parte, no de ésta.
+    if let Ok(escrito) = PipelineSpec::from_path_as_written(path) {
+        if orch_flight::cluster::reparte(&escrito) {
+            let problema = match state.coordinador() {
+                Some(_) => Dag::build(escrito.clone()).err().map(|e| e.to_string()),
+                None => Some(orch_flight::cluster::sin_cluster(&escrito).to_string()),
+            };
+            return (escrito.nodes.len(), escrito.description.clone(), problema);
+        }
+    }
     let mut spec = match PipelineSpec::from_path(path) {
         Ok(spec) => spec,
         Err(err) => return (0, None, Some(err.to_string())),
@@ -190,21 +201,22 @@ pub async fn start_run(app: AppHandle, state: State<'_, AppState>, path: String)
 
     // Se lee una vez: lo que corre y lo que se guarda como «la versión que
     // corrió» son el mismo texto. Mirar git lanza procesos: fuera del runtime.
-    let version = tokio::task::spawn_blocking(move || orch_version::Snapshot::take(&path))
+    let ruta = path.clone();
+    let version = tokio::task::spawn_blocking(move || orch_version::Snapshot::take(&ruta))
         .await
         .map_err(fail)?
         .map_err(fail)?;
-    let mut spec = version.spec().map_err(fail)?;
-    orch_core::pushdown::apply(&mut spec, &registry);
-    let dag = Dag::build(spec).map_err(fail)?;
+    // El motor de siempre o, si reparte nodos entre máquinas, el coordinador
+    // del clúster de `ORCH_CLUSTER`.
+    let executor =
+        orch_flight::cluster::Motor::para(&path, &version.text, registry, state.coordinador())
+            .map_err(fail)?;
 
     tokio::spawn(async move {
-        let executor = Executor::new(registry);
-
         // Tres oyentes del mismo canal: uno pinta, otro guarda y otro vigila.
         let bridge = crate::events::bridge(app.clone(), executor.subscribe());
         let recorder = orch_store::EventWriter::spawn(Arc::clone(&store), executor.subscribe());
-        let vigilancia = orch_alert::Vigilancia::para(dag.spec(), Some(&store));
+        let vigilancia = orch_alert::Vigilancia::para(executor.spec(), Some(&store));
         let entrega =
             orch_alert::Entrega::nueva(Some(Arc::clone(&store)), vigilancia.config.webhook.clone());
         let ventana = app.clone();
@@ -214,11 +226,12 @@ pub async fn start_run(app: AppHandle, state: State<'_, AppState>, path: String)
             entrega,
             move |alerta, _problemas| {
                 let _ = ventana.emit("orch://alert", alerta);
+                crate::avisos::notificar(&ventana, alerta);
             },
         );
 
         let started_at = chrono::Utc::now();
-        let outcome = executor.run(&dag).await;
+        let outcome = executor.run().await;
         drop(executor);
         bridge.await.ok();
         recorder.await.ok();
@@ -485,10 +498,42 @@ fn comprobar_revision(ruta: &std::path::Path, revision: &str) -> orch_core::Resu
 pub async fn pipeline_lineage(
     state: State<'_, AppState>,
     path: String,
-) -> Response<Vec<NodeLineage>> {
+) -> Response<LineageCarpeta> {
     let registry = state.registry();
-    let dag = Dag::build(PipelineSpec::from_path(&path).map_err(fail)?).map_err(fail)?;
-    Executor::new(registry).lineage(&dag).await.map_err(fail)
+    let ruta = std::path::Path::new(&path);
+    let dag = Dag::build(PipelineSpec::from_path(ruta).map_err(fail)?).map_err(fail)?;
+    // Con los demás pipelines de la carpeta: si éste lee lo que escribe otro,
+    // el rastro sigue por el fichero, y el impacto llega a los que leen lo
+    // que escribe éste.
+    let (nodes, otros) = orch_schedule::lineage_en_carpeta(&registry, ruta, &dag)
+        .await
+        .map_err(fail)?;
+    Ok(LineageCarpeta {
+        pipeline: dag.spec().name.clone(),
+        nodes,
+        otros: otros
+            .into_iter()
+            .map(|(pipeline, nodes)| LineageOtro {
+                pipeline,
+                // Para el impacto bastan sus salidas.
+                nodes: nodes.into_iter().filter(|n| n.kind == "sink").collect(),
+            })
+            .collect(),
+    })
+}
+
+/// El lineage de un pipeline y, de los demás de su carpeta, sus salidas.
+#[derive(Debug, Clone, Serialize)]
+pub struct LineageCarpeta {
+    pub pipeline: String,
+    pub nodes: Vec<NodeLineage>,
+    pub otros: Vec<LineageOtro>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LineageOtro {
+    pub pipeline: String,
+    pub nodes: Vec<NodeLineage>,
 }
 
 fn graph_of(state: &AppState, path: &std::path::Path, texto: &str) -> Response<Graph> {

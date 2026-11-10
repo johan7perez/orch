@@ -77,6 +77,8 @@ cron = "0.17"
 tauri = { version = "2", features = [] }
 tauri-build = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# Avisos del sistema para las alertas (Fase 6.2).
+tauri-plugin-notification = "2"
 # `bundled` compila DuckDB desde fuente: la primera build es larga, pero el
 # binario no depende de que haya una libduckdb instalada en la máquina.
 duckdb = { version = "1", features = ["bundled"] }

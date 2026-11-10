@@ -15,7 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use orch_core::{Executor, Registry, Result, RunReport};
+use orch_core::{Executor, PipelineSpec, Registry, Result, RunReport};
+use orch_flight::cluster::{Coordinador, Motor};
 use orch_schedule::{discover, Launch, Reason, Scheduler};
 use orch_store::{EventWriter, Store};
 
@@ -38,9 +39,24 @@ pub struct DaemonOptions {
     pub store: PathBuf,
     /// Días de historial a conservar. `None` = todo.
     pub keep_days: Option<i64>,
+    /// Con él, también los pipelines que reparten nodos entre máquinas.
+    pub coordinador: Option<Arc<Coordinador>>,
+}
+
+/// Con qué se ejecuta: lo que hay en esta máquina y, si hay clúster, su
+/// coordinador. Uno para todas las ejecuciones: cada una lleva sus propios
+/// eventos, así que las alertas de una no se mezclan con las de otra.
+#[derive(Clone)]
+struct Ejecucion {
+    registry: Arc<Registry>,
+    coordinador: Option<Arc<Coordinador>>,
 }
 
 pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> {
+    let con = Ejecucion {
+        registry,
+        coordinador: options.coordinador.clone(),
+    };
     let mut vistas = huellas(&options.dir);
     let found = discover(&options.dir)?;
     // Un fichero roto se reporta pero no impide arrancar con los demás: si
@@ -62,7 +78,7 @@ pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> 
     let mut paths: HashMap<String, PathBuf> = HashMap::new();
     let mut entries = Vec::with_capacity(found.entries.len());
     for entry in found.entries {
-        match validate(&registry, &entry.path).await {
+        match validate(&con, &entry.path).await {
             Ok(()) => {
                 paths.insert(entry.name.clone(), entry.path.clone());
                 entries.push(entry);
@@ -118,7 +134,7 @@ pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> 
         tokio::select! {
             _ = ticker.tick(), if !stopping => {
                 for launch in scheduler.due(Utc::now()) {
-                    spawn(&mut running, &registry, &store, &paths, launch);
+                    spawn(&mut running, &con, &store, &paths, launch);
                 }
             }
 
@@ -127,7 +143,7 @@ pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> 
                     Ok((name, succeeded)) => {
                         for launch in scheduler.finished(&name, succeeded) {
                             if !stopping {
-                                spawn(&mut running, &registry, &store, &paths, launch);
+                                spawn(&mut running, &con, &store, &paths, launch);
                             }
                         }
                     }
@@ -138,7 +154,7 @@ pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> 
             _ = relectura.tick(), if !stopping => {
                 let ahora = huellas(&options.dir);
                 if ahora != vistas {
-                    recargar(&registry, &options.dir, &vistas, &ahora, &mut paths, &mut scheduler)
+                    recargar(&con, &options.dir, &vistas, &ahora, &mut paths, &mut scheduler)
                         .await;
                     vistas = ahora;
                 }
@@ -172,7 +188,7 @@ fn imprimir_alerta(alerta: &orch_alert::Alerta, problemas: &[String]) {
 
 fn spawn(
     running: &mut tokio::task::JoinSet<(String, bool)>,
-    registry: &Arc<Registry>,
+    con: &Ejecucion,
     store: &Arc<Store>,
     paths: &HashMap<String, PathBuf>,
     launch: Launch,
@@ -181,7 +197,7 @@ fn spawn(
         tracing::error!(pipeline = %launch.name, "no se encontró el fichero");
         return;
     };
-    let registry = Arc::clone(registry);
+    let con = con.clone();
     let store = Arc::clone(store);
 
     println!(
@@ -192,7 +208,7 @@ fn spawn(
     );
 
     running.spawn(async move {
-        let succeeded = match execute(&registry, &store, &path).await {
+        let succeeded = match execute(&con, &store, &path).await {
             Ok(report) => {
                 println!(
                     "{}  {} {} en {} ms",
@@ -225,22 +241,27 @@ fn spawn(
     });
 }
 
-async fn execute(registry: &Arc<Registry>, store: &Arc<Store>, path: &Path) -> Result<RunReport> {
+async fn execute(con: &Ejecucion, store: &Arc<Store>, path: &Path) -> Result<RunReport> {
     // Mirar el estado en git lanza un par de procesos: fuera del runtime.
     let ruta = path.to_path_buf();
     let version =
         tokio::task::spawn_blocking(move || orch_version::Snapshot::take(&ruta)).await??;
-    let (dag, _) = crate::load_spec(version.spec()?, registry)?;
-    let executor = Executor::new(Arc::clone(registry));
-    let recorder = EventWriter::spawn(Arc::clone(store), executor.subscribe());
-    let vigilancia = orch_alert::Vigilancia::para(dag.spec(), Some(store));
+    let motor = Motor::para(
+        path,
+        &version.text,
+        Arc::clone(&con.registry),
+        con.coordinador.clone(),
+    )?;
+    let recorder = EventWriter::spawn(Arc::clone(store), motor.subscribe());
+    let vigilancia = orch_alert::Vigilancia::para(motor.spec(), Some(store));
     let entrega =
         orch_alert::Entrega::nueva(Some(Arc::clone(store)), vigilancia.config.webhook.clone());
-    let alertas = orch_alert::vigilar(vigilancia, executor.subscribe(), entrega, imprimir_alerta);
+    let alertas = orch_alert::vigilar(vigilancia, motor.subscribe(), entrega, imprimir_alerta);
 
     let started_at = Utc::now();
-    let result = executor.run(&dag).await;
-    drop(executor);
+    let result = motor.run().await;
+    // Soltarlo cierra el canal de eventos de esta ejecución.
+    drop(motor);
     recorder.await.ok();
     alertas.await.ok();
 
@@ -292,7 +313,7 @@ fn huellas(dir: &Path) -> BTreeMap<PathBuf, String> {
 /// rompe (a medio editar, un secreto que falta) deja de dispararse con un
 /// aviso, y vuelve en cuanto se arregla.
 async fn recargar(
-    registry: &Arc<Registry>,
+    con: &Ejecucion,
     dir: &Path,
     antes: &BTreeMap<PathBuf, String>,
     ahora: &BTreeMap<PathBuf, String>,
@@ -330,7 +351,7 @@ async fn recargar(
     let mut actualizados = Vec::new();
     for entry in found.entries {
         let valido = if tocados.contains(&entry.path) {
-            match validate(registry, &entry.path).await {
+            match validate(con, &entry.path).await {
                 Ok(()) => {
                     actualizados.push(entry.name.clone());
                     true
@@ -385,9 +406,28 @@ fn nombre_de(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-async fn validate(registry: &Arc<Registry>, path: &Path) -> Result<()> {
-    let (dag, _) = crate::load(path, registry)?;
-    Executor::new(Arc::clone(registry)).prepare(&dag).await?;
+async fn validate(con: &Ejecucion, path: &Path) -> Result<()> {
+    let texto = std::fs::read_to_string(path).map_err(|source| orch_core::OrchError::SpecIo {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let escrito = PipelineSpec::from_yaml_str_as_written(&path.display().to_string(), &texto)?;
+    if orch_flight::cluster::reparte(&escrito) {
+        // Lo de aquí se comprueba aquí; lo de cada worker, allí, al ejecutar.
+        let coordinador = con
+            .coordinador
+            .as_ref()
+            .ok_or_else(|| orch_flight::cluster::sin_cluster(&escrito))?;
+        let base = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        return coordinador.validar(&escrito, base).await;
+    }
+    let (dag, _) = crate::load(path, &con.registry)?;
+    Executor::new(Arc::clone(&con.registry))
+        .prepare(&dag)
+        .await?;
     Ok(())
 }
 
