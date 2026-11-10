@@ -528,11 +528,129 @@ tarda 17–64 ms en release (150–540 ms en debug).
 - ⬜ Lineage entre pipelines: hoy se para en el origen, aunque lea un fichero
   que escribe otro pipeline (o un sink del mismo).
 
-## Fase 4 — Escalabilidad ⬜
+## Fase 4 — Escalabilidad ✅
 
-- ⬜ Versionado de pipelines con git.
-- ⬜ Modo distribuido opcional: reutilizar los traits de conector sobre un
-  transporte remoto (Arrow Flight es el candidato natural).
+### 4.1 Cada ejecución sabe qué versión corrió ✅
+
+- ✅ Al arrancar se lee el YAML una sola vez y de ese texto salen lo que se
+  ejecuta y lo que se guarda (`Snapshot`), así que «la versión que corrió» es
+  exactamente lo que corrió. El historial guarda el texto una vez por versión
+  (`pipeline_versions`) y, por ejecución, su huella, el último commit que tocó
+  el fichero y si tenía cambios sin guardar (`run_versions`). La huella es la
+  misma con la que el lienzo detecta cambios por debajo. Sin git, la huella y
+  el texto bastan.
+- ✅ Crate `orch-version` sobre el `git` instalado, no una librería: respeta
+  autor, firma y hooks del usuario, y no añade otra dependencia en C. Cuesta
+  unos 11 ms al arrancar cada ejecución (cuatro procesos). Nunca ejecuta el
+  `core.fsmonitor` de un repositorio, ni pregunta nada por terminal.
+- ✅ Diff de pipeline, no de líneas: campos hasta la hoja (`config.where`,
+  `schedule.cron`), nodos añadidos, quitados y renombrados (un renombrado no
+  arrastra sus aristas), aristas, y el lienzo aparte. Lo que no cambia el
+  significado no aparece. Las queries de varias líneas, línea a línea.
+- ✅ `orch diff <pipeline> [desde] [hasta]` con commits, la copia de trabajo o
+  `run:<id>`; también en JSON. Rechaza comparar con una ejecución de otro
+  pipeline.
+- ✅ `orch history`: los commits del fichero (siguiéndolo en los renombrados)
+  con sus ejecuciones. Una ejecución se atribuye al commit **cuyo texto
+  corrió**, no al que había al ejecutar: salió al probarlo, cuando una
+  ejecución con cambios que luego se guardaron tal cual aparecía como «nunca
+  guardada». Fuera de git, las versiones que han corrido por su huella.
+- ✅ `orch runs` y `orch logs` dicen la versión; `run_history` la trae.
+- ✅ Tests contra repositorios temporales de verdad (con identidad y sin
+  hooks ni firma propios, para no depender de la configuración de nadie):
+  guardar, cambiar, descartar, renombrar, versiones que no tocaron el fichero;
+  y del diff y del historial guardado.
+
+### 4.2 Versiones desde la aplicación ✅
+
+- ✅ Vista *Versiones* junto a *Ejecución* y *Diseño*: lo que hay sin
+  guardar como diff de pipeline, el historial de commits con las ejecuciones
+  de cada uno y, al elegir uno, qué cambió en él o qué ha cambiado desde él.
+  Fuera de git, las versiones que han corrido según el historial, que se
+  comparan y recuperan igual.
+- ✅ Guardar versión (commit sólo de ese fichero, sin tocar lo que el usuario
+  tuviera preparado), descartar cambios (con confirmación: es lo único que
+  pierde trabajo) y recuperar una versión anterior, que vuelve al fichero
+  como cambio sin guardar en vez de reescribir el historial. Descartar y
+  recuperar llevan la revisión del texto que se estaba viendo: si el fichero
+  cambió por debajo, no se hace nada.
+- ✅ El detalle de una ejecución dice qué versión corrió y, a petición, qué ha
+  cambiado desde entonces.
+- ✅ La lógica de cargar versiones y montar el historial está en
+  `orch_store::versions`, compartida con la CLI, con tests contra un
+  repositorio y un historial reales. El diff de la ventana se comprobó
+  pintándolo con los diffs reales de `orch diff`.
+- ✅ Pasado por la ventana de verdad, sobre un repositorio de prueba: estado
+  al día, cambios sin guardar con su diff, guardar con mensaje (el commit
+  aparece en git), cancelar y confirmar el descarte, recuperar una versión
+  antigua y el detalle de una ejecución con lo que ha cambiado desde
+  entonces. Salió un fallo del historial: una ejecución con cambios que luego
+  se guardaron tal cual contaba en dos sitios (el historial guarda también
+  cómo estaba git al ejecutar), y ahora se juntan por el texto. De paso, la
+  sección *Columnas* del inspector (3.3), también vista en la ventana,
+  perdía el margen de su título.
+
+### 4.3 Modo distribuido opcional ✅
+
+Reutilizar los traits de conector sobre un transporte remoto (Arrow Flight es
+el candidato natural). Medir antes de decidir, por pasos:
+
+- ✅ **Medir el transporte** (`cargo run --release -p orch-flight --example
+  transporte`, 20 M filas, lotes de 65 536, tres pasadas): en memoria 41–48
+  ms; sólo codificar y decodificar IPC, 61–67 ms (unos 5 GB/s); Flight por la
+  red local, 432–461 ms, unos 700 MB/s (5,6 Gbit/s). Lo caro es gRPC, no la
+  serialización. Con un origen que trabaja de verdad (texto), la arista
+  remota añade un 25 % (1,59–1,65 s frente a 1,96–2,00 s). En una red de 1
+  Gbit el límite es el cable.
+- ✅ **Aristas remotas como conectores** (crate `orch-flight`): el sink
+  `flight` sirve su flujo a un consumidor y el origen `flight` lo lee de
+  cualquier servidor Flight. Contrapresión de HTTP/2 como canal acotado; un
+  fallo a mitad del que sirve llega como fallo al que lee (con su motivo), y
+  un consumidor que deja de leer antes del final hace fallar al que sirve
+  (desde allí no se distingue un `limit` de una caída). Cada uno arranca
+  cuando quiere: el que lee insiste, el que sirve espera, con plazos.
+  Escuchar fuera de la máquina exige `token`, comparado en tiempo constante.
+  Probado con dos ejecutores independientes por la red local y con dos
+  procesos `orch run`.
+- ✅ **Coordinador y workers** (`orch_flight::cluster`): `worker: <nombre>`
+  en un nodo, y un fichero de clúster aparte con cómo llegar a cada worker
+  y con qué certificados. El coordinador (`orch run --cluster`) parte el DAG
+  donde una arista cruza de máquina —una reescritura del `PipelineSpec`,
+  como el pushdown—: `u→b` envía en la máquina de `u` y `u@b` recibe en `b`,
+  con el puerto `u` para que una query siga leyendo la tabla `u`. Cada
+  `orch worker` sirve las aristas que salen de él por su propio puerto, uno
+  por worker y no uno por arista, y ejecuta su parte tal y como está escrita
+  (sus secretos, sus rutas). Una sola ejecución: un `run_id`, los eventos de
+  todas las máquinas juntos (el progreso de todas en un evento), y un informe
+  con las aristas como `edge`, que no cuentan como filas escritas.
+- ✅ Un fallo de un nodo viaja por las aristas como en una sola máquina; una
+  parte que no puede correr (worker que no responde, conector que no tiene,
+  conexión perdida) cancela las demás: con un worker caído, `orch run` falla
+  en 0,3 s diciendo cuál, en vez de esperar el plazo de las aristas. TLS
+  mutuo obligatorio en todo el clúster. Un `orch run` sin `--cluster` se
+  niega a ejecutar nodos con `worker`.
+- ✅ Salió al probarlo un fallo del motor: cancelar una ejecución soltando su
+  future dejaba viva la tarea que muestrea el progreso, con el canal de
+  eventos abierto para siempre (y colgado a quien lo escuchaba). Ahora se
+  aborta al soltarla; test propio.
+- ✅ Tests con workers de verdad (servicios Flight con TLS mutuo en puertos
+  de esta máquina): worker → worker → aquí, aquí → worker → aquí, fallo
+  dentro de un worker, worker que no responde, worker sin un conector,
+  coordinador de otra CA; y de la división. Probado también con tres
+  procesos (`orch worker` ×2 y `orch run --cluster`) y certificados hechos
+  con `openssl`.
+- ⬜ Repartir desde el demonio y la aplicación (hoy, sólo `orch run`).
+- ⬜ Esperas `after` entre nodos de máquinas distintas.
+- ✅ **Flight sobre TLS**: bloque `tls` en los dos extremos (PEM), con TLS
+  mutuo (`client_ca`) como alternativa al token para escuchar fuera. Sobre
+  rustls y aws-lc-rs, los que ya usaba `reqwest`: no se compila otra
+  criptografía. Un certificado que no vale falla al momento, sin agotar el
+  plazo; uno que no está, en `validate`. Las rutas de certificados dentro de
+  `tls` cuelgan ahora de la carpeta del pipeline, como `path`, lo que arregla
+  de paso el `root_cert` de PostgreSQL, que se resolvía contra el directorio
+  de trabajo. Tests con certificados generados en cada test (rcgen): TLS
+  mutuo, cliente sin certificado, cliente y servidor de otra CA, `https` sin
+  CA propia.
 
 ---
 
@@ -550,6 +668,9 @@ Orch, listado en las limitaciones del README:
 - El lienzo no tiene deshacer: cada cambio se escribe al momento.
 - La vista general del lienzo con cientos de nodos a la vista es lenta: es el
   límite de pintarla con elementos del DOM.
+- Dos procesos no pueden usar el mismo historial a la vez (DuckDB admite un
+  solo proceso escribiendo): un segundo `orch run` sobre el mismo `--store`
+  no arranca. Salió al probar las aristas remotas en una sola máquina.
 - `serde_yaml` está sin mantenimiento; migrar cuando haya un sucesor claro.
   El editor del lienzo ya no depende de él para escribir (usa `yaml-edit`),
   sólo para leer.

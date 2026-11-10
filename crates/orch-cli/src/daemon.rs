@@ -211,7 +211,11 @@ fn spawn(
 }
 
 async fn execute(registry: &Arc<Registry>, store: &Arc<Store>, path: &Path) -> Result<RunReport> {
-    let (dag, _) = crate::load(path, registry)?;
+    // Mirar el estado en git lanza un par de procesos: fuera del runtime.
+    let ruta = path.to_path_buf();
+    let version =
+        tokio::task::spawn_blocking(move || orch_version::Snapshot::take(&ruta)).await??;
+    let (dag, _) = crate::load_spec(version.spec()?, registry)?;
     let executor = Executor::new(Arc::clone(registry));
     let recorder = EventWriter::spawn(Arc::clone(store), executor.subscribe());
     let vigilancia = orch_alert::Vigilancia::para(dag.spec(), Some(store));
@@ -228,6 +232,8 @@ async fn execute(registry: &Arc<Registry>, store: &Arc<Store>, path: &Path) -> R
     let report = result?;
     if let Err(err) = store.record_run(&report, started_at) {
         tracing::error!(error = %err, "no se pudo guardar la ejecución");
+    } else if let Err(err) = store.record_run_version(&report.run_id, &version) {
+        tracing::error!(error = %err, "no se pudo guardar qué versión corrió");
     }
     Ok(report)
 }

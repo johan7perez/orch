@@ -85,6 +85,7 @@ pub fn full_registry(directory: &Path) -> (Registry, Vec<String>) {
     orch_sql::register(&mut registry);
     orch_rest::register(&mut registry);
     orch_postgres::register(&mut registry);
+    orch_flight::register(&mut registry);
     let avisos =
         orch_wasm::registrar_carpeta(&mut registry, &orch_wasm::carpeta_de_plugins(directory));
     (registry, avisos)

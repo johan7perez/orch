@@ -106,6 +106,17 @@ abierto se fue concretando así; el detalle de cada fase está en
   por el mismo camino que los esquemas, y distingue las columnas cuyo valor
   llega a la salida de las que sólo deciden qué filas pasan: sin las
   segundas, el análisis de impacto no vería la clave de un join.
+- **Versionado sobre el `git` instalado.** Cada ejecución guarda el texto
+  exacto que corrió y, si hay git, de qué commit es; el diff compara
+  pipelines, no líneas. Se llama al binario de git y no a una librería, para
+  respetar la configuración del usuario; sin git, la huella del texto basta.
+- **Distribuido sobre Arrow Flight, con TLS mutuo.** Medido primero: el
+  transporte mueve unos 700 MB/s por la red local, más que un enlace de 1
+  Gbit. Un sink y un origen `flight` unen pipelines de máquinas distintas, y
+  un coordinador reparte un mismo pipeline entre `orch worker`s partiéndolo
+  por las aristas que cruzan de máquina: cada parte es un pipeline local de
+  siempre. Los datos viajan directos entre workers, y cada máquina resuelve
+  sus secretos y sus rutas.
 
 Y en qué quedaron los riesgos:
 

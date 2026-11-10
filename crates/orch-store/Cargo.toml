@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 orch-core.workspace = true
+orch-version.workspace = true
 
 chrono.workspace = true
 duckdb.workspace = true

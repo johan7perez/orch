@@ -268,22 +268,30 @@ impl PipelineSpec {
     /// desde la raíz del repositorio que desde la aplicación de escritorio,
     /// que arranca desde donde el sistema quiera.
     ///
-    /// `path` es la única clave que en la config de un nodo significa
-    /// «fichero en disco»; `records_path` y compañía son otra cosa y no se
-    /// tocan.
+    /// Las claves que significan «fichero en disco» son `path` y, dentro de
+    /// un bloque `tls`, los certificados y claves ([`TLS_FILE_KEYS`]).
+    /// `records_path` y compañía son otra cosa y no se tocan.
     pub fn resolve_paths(&mut self, base: &std::path::Path) {
+        let resolver = |valor: Option<&mut Value>| {
+            let Some(Value::String(ruta)) = valor else {
+                return;
+            };
+            let relativa = std::path::Path::new(ruta.as_str());
+            if relativa.is_absolute() {
+                return;
+            }
+            *ruta = base.join(relativa).to_string_lossy().into_owned();
+        };
         for node in &mut self.nodes {
             let (NodeKind::Source { config, .. }
             | NodeKind::Transform { config, .. }
             | NodeKind::Sink { config, .. }) = &mut node.kind;
-            let Some(Value::String(ruta)) = config.get_mut("path") else {
-                continue;
-            };
-            let relativa = std::path::Path::new(ruta.as_str());
-            if relativa.is_absolute() {
-                continue;
+            resolver(config.get_mut("path"));
+            if let Some(Value::Object(tls)) = config.get_mut("tls") {
+                for clave in TLS_FILE_KEYS {
+                    resolver(tls.get_mut(*clave));
+                }
             }
-            *ruta = base.join(relativa).to_string_lossy().into_owned();
         }
     }
 
@@ -291,8 +299,17 @@ impl PipelineSpec {
     /// las rutas ya absolutas.
     pub fn from_path(path: impl AsRef<std::path::Path>) -> crate::Result<Self> {
         let path = path.as_ref();
-        let display = path.display().to_string();
-        let mut spec = Self::from_yaml_str(&display, &Self::read(path)?)?;
+        Self::from_text_at(path, &Self::read(path)?)
+    }
+
+    /// Como [`from_path`](Self::from_path), con el texto ya leído.
+    ///
+    /// Para cuando hay que guardar exactamente lo que se ejecutó: el fichero
+    /// se lee una vez, y de ese mismo texto salen el pipeline y su versión.
+    /// `path` sólo sirve para los mensajes y para resolver rutas relativas.
+    pub fn from_text_at(path: impl AsRef<std::path::Path>, text: &str) -> crate::Result<Self> {
+        let path = path.as_ref();
+        let mut spec = Self::from_yaml_str(&path.display().to_string(), text)?;
         spec.resolve_paths(path.parent().unwrap_or_else(|| std::path::Path::new(".")));
         Ok(spec)
     }
@@ -374,6 +391,11 @@ pub struct NodeSpec {
     pub after: Vec<NodeId>,
     #[serde(default)]
     pub retry: RetryPolicy,
+    /// En qué worker de un clúster corre el nodo. Sin esto, donde se lance
+    /// el pipeline. Los nombres de los workers y cómo llegar a ellos van en
+    /// el fichero del clúster, no aquí: dependen del despliegue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
     // `flatten` es incompatible con `deny_unknown_fields`, por eso este struct
     // no lo lleva.
     #[serde(flatten)]
@@ -512,4 +534,26 @@ impl RetryPolicy {
         let millis = (self.backoff_ms as f64 * factor).min(self.max_backoff_ms as f64);
         std::time::Duration::from_millis(millis as u64)
     }
+}
+
+/// Las claves de un bloque `tls` que son ficheros: se resuelven contra la
+/// carpeta del pipeline igual que `path`.
+pub const TLS_FILE_KEYS: &[&str] = &["cert", "key", "ca", "client_ca", "root_cert"];
+
+/// Huella del texto de un pipeline.
+///
+/// Identifica una versión por su contenido: el lienzo la usa para saber si el
+/// fichero cambió por debajo, y el historial para saber qué corrió en cada
+/// ejecución. Al ser la misma, una ejecución y el lienzo pueden decir si
+/// hablan del mismo texto. No es criptográfica ni falta que hace; sólo tiene
+/// que cambiar cuando cambia el texto.
+pub fn fingerprint(text: &str) -> String {
+    // FNV-1a de 64 bits: estable entre versiones de Rust, a diferencia de
+    // `DefaultHasher`, y sin dependencias.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }

@@ -118,3 +118,64 @@ edges:
 
     std::fs::remove_dir_all(&carpeta).ok();
 }
+
+#[test]
+fn los_ficheros_de_tls_tambien_cuelgan_de_la_carpeta_del_pipeline() {
+    let mut spec = PipelineSpec::from_yaml_str(
+        "test.yaml",
+        r#"
+name: tls
+nodes:
+  - id: leer
+    type: source
+    connector: flight
+    config:
+      url: "https://a:1"
+      ticket: x
+      tls: { ca: certs/ca.pem, cert: certs/yo.pem, key: /abs/yo.key, domain: a }
+  - id: pg
+    type: sink
+    connector: postgres
+    config: { tls: { root_cert: ca.pem }, records_path: no/es/un/fichero }
+edges:
+  - { from: leer, to: pg }
+"#,
+    )
+    .unwrap();
+    spec.resolve_paths(Path::new("/pipelines"));
+
+    let tls = |id: &str| -> serde_json::Value {
+        let nodo = spec.nodes.iter().find(|n| n.id == id).unwrap();
+        let (NodeKind::Source { config, .. } | NodeKind::Sink { config, .. }) = &nodo.kind else {
+            unreachable!()
+        };
+        config.clone()
+    };
+    let leer = tls("leer");
+    assert_eq!(
+        leer["tls"]["ca"],
+        Path::new("/pipelines")
+            .join("certs/ca.pem")
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(
+        leer["tls"]["cert"],
+        Path::new("/pipelines")
+            .join("certs/yo.pem")
+            .to_string_lossy()
+            .as_ref()
+    );
+    // Lo absoluto, tal cual; lo que no es un fichero, tampoco se toca.
+    assert_eq!(leer["tls"]["key"], "/abs/yo.key");
+    assert_eq!(leer["tls"]["domain"], "a");
+    let pg = tls("pg");
+    assert_eq!(
+        pg["tls"]["root_cert"],
+        Path::new("/pipelines")
+            .join("ca.pem")
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(pg["records_path"], "no/es/un/fichero");
+}

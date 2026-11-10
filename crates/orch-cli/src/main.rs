@@ -2,6 +2,7 @@
 
 mod daemon;
 mod report;
+mod versiones;
 mod watch;
 
 use std::path::PathBuf;
@@ -67,6 +68,54 @@ enum Command {
         /// No guarda nada en el historial.
         #[arg(long)]
         no_store: bool,
+        /// Fichero del clúster: reparte los nodos con `worker:` entre las
+        /// máquinas que nombra.
+        #[arg(long, env = "ORCH_CLUSTER")]
+        cluster: Option<PathBuf>,
+    },
+    /// Ejecuta las partes de pipelines que le mande un coordinador
+    /// (`orch run --cluster`) y sirve sus aristas.
+    ///
+    /// Sólo acepta a quien presente un certificado de la CA del clúster: un
+    /// worker ejecuta lo que le manden, y eso no se deja abierto.
+    Worker {
+        /// Dónde escuchar, `host:puerto`.
+        #[arg(long)]
+        listen: String,
+        /// La CA del clúster.
+        #[arg(long)]
+        ca: PathBuf,
+        /// El certificado de esta máquina, firmado por esa CA.
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+        /// Contra qué carpeta se resuelven las rutas relativas de lo que
+        /// llegue. Sus plugins, en `plugins/` dentro de ella.
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Qué cambió entre dos versiones del pipeline, nodo a nodo.
+    ///
+    /// Una versión es un commit (`HEAD`, `a1b2c3`, `main~2`) o lo que corrió
+    /// en una ejecución (`run:<id>`). Sin versiones, compara la última
+    /// guardada en git con el fichero tal y como está.
+    Diff {
+        pipeline: PathBuf,
+        /// Versión de partida. Por defecto, `HEAD`.
+        desde: Option<String>,
+        /// Versión de llegada. Por defecto, el fichero en disco.
+        hasta: Option<String>,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+    /// Versiones del pipeline en git, con las ejecuciones de cada una.
+    History {
+        pipeline: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
     },
     /// Lista los conectores y transformaciones disponibles.
     ///
@@ -159,16 +208,62 @@ fn init_tracing(level: &str) {
 /// Un plugin que no carga no impide nada: se avisa y se sigue. Si un
 /// pipeline lo usa, fallará al validarse con el motivo de siempre.
 fn full_registry(plugins: Option<&std::path::Path>) -> std::sync::Arc<orch_core::Registry> {
+    std::sync::Arc::new(base_registry(plugins))
+}
+
+fn base_registry(plugins: Option<&std::path::Path>) -> orch_core::Registry {
     let mut registry = orch_connectors::default_registry();
     orch_sql::register(&mut registry);
     orch_rest::register(&mut registry);
     orch_postgres::register(&mut registry);
+    orch_flight::register(&mut registry);
     if let Some(carpeta) = plugins {
         for aviso in orch_wasm::registrar_carpeta(&mut registry, carpeta) {
             eprintln!("aviso: {aviso}");
         }
     }
-    std::sync::Arc::new(registry)
+    registry
+}
+
+/// Lo que ejecuta `orch run`: el motor de siempre, o el coordinador de un
+/// clúster. Para quien escucha sus eventos son iguales.
+enum Motor {
+    Local {
+        ejecutor: Executor,
+        dag: Dag,
+    },
+    Cluster {
+        coordinador: orch_flight::cluster::Coordinador,
+        spec: PipelineSpec,
+        base: PathBuf,
+    },
+}
+
+impl Motor {
+    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<orch_core::RunEvent> {
+        match self {
+            Motor::Local { ejecutor, .. } => ejecutor.subscribe(),
+            Motor::Cluster { coordinador, .. } => coordinador.subscribe(),
+        }
+    }
+
+    fn spec(&self) -> &PipelineSpec {
+        match self {
+            Motor::Local { dag, .. } => dag.spec(),
+            Motor::Cluster { spec, .. } => spec,
+        }
+    }
+
+    async fn run(&self) -> orch_core::Result<orch_core::RunReport> {
+        match self {
+            Motor::Local { ejecutor, dag } => ejecutor.run(dag).await,
+            Motor::Cluster {
+                coordinador,
+                spec,
+                base,
+            } => coordinador.run(spec, base).await,
+        }
+    }
 }
 
 /// La carpeta a la que pertenece lo que pide el comando: ahí se buscan sus
@@ -185,9 +280,14 @@ fn carpeta_base(command: &Command) -> Option<PathBuf> {
         Command::Validate { pipeline } | Command::Graph { pipeline } => Some(carpeta_de(pipeline)),
         Command::Lineage { pipeline, .. } => Some(carpeta_de(pipeline)),
         Command::Run { pipeline, .. } => Some(carpeta_de(pipeline)),
+        Command::Worker { dir, .. } => Some(dir.clone()),
         Command::Daemon { dir, .. } => Some(dir.clone()),
         Command::Connectors { .. } => Some(PathBuf::from(".")),
-        Command::Runs { .. } | Command::Prune { .. } | Command::Logs { .. } => None,
+        Command::Runs { .. }
+        | Command::Prune { .. }
+        | Command::Logs { .. }
+        | Command::Diff { .. }
+        | Command::History { .. } => None,
     }
 }
 
@@ -242,12 +342,14 @@ async fn dispatch(
             let run_id = store.resolve_run(&run_id)?;
             let nodes = store.nodes_of(&run_id)?;
             let events = store.events_of(&run_id, limit)?;
+            let version = store.run_version(&run_id)?;
             match format {
-                Format::Text => report::print_logs(&run_id, &nodes, &events),
+                Format::Text => report::print_logs(&run_id, version.as_ref(), &nodes, &events),
                 Format::Json => println!(
                     "{}",
                     to_json(&serde_json::json!({
                         "run_id": run_id,
+                        "version": version,
                         "nodes": nodes,
                         "events": events,
                     }))?
@@ -316,10 +418,59 @@ async fn dispatch(
             Ok(ExitCode::SUCCESS)
         }
 
+        Command::Diff {
+            pipeline,
+            desde,
+            hasta,
+            format,
+        } => {
+            versiones::diff(&pipeline, desde, hasta, store_path, format == Format::Json)?;
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::History {
+            pipeline,
+            limit,
+            format,
+        } => {
+            versiones::history(&pipeline, limit, store_path, format == Format::Json)?;
+            Ok(ExitCode::SUCCESS)
+        }
+
         Command::Graph { pipeline } => {
             let (dag, pushed) = load(&pipeline, &registry)?;
             report::print_graph(&dag);
             report::print_pushdown(&pushed);
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Worker {
+            listen,
+            ca,
+            cert,
+            key,
+            dir,
+        } => {
+            let tls = orch_flight::cluster::ClusterTls { ca, cert, key };
+            let escucha = tokio::net::TcpListener::bind(&listen)
+                .await
+                .map_err(|err| {
+                    orch_core::OrchError::Other(format!("no se pudo escuchar en `{listen}`: {err}"))
+                })?;
+            let registry = std::sync::Arc::try_unwrap(registry)
+                .map_err(|_| orch_core::OrchError::Other("registro compartido".into()))?;
+            println!(
+                "worker escuchando en {} (rutas desde `{}`); Ctrl+C para parar",
+                escucha
+                    .local_addr()
+                    .map(|a| a.to_string())
+                    .unwrap_or(listen),
+                dir.display()
+            );
+            orch_flight::cluster::servir_worker(escucha, &tls, registry, dir, async {
+                let _ = tokio::signal::ctrl_c().await;
+            })
+            .await?;
             Ok(ExitCode::SUCCESS)
         }
 
@@ -328,9 +479,40 @@ async fn dispatch(
             format,
             follow,
             no_store,
+            cluster,
         } => {
-            let (dag, _) = load(&pipeline, &registry)?;
-            let executor = Executor::new(registry);
+            // Se lee una vez: lo que corre y lo que se guarda como «la versión
+            // que corrió» son el mismo texto.
+            let version = orch_version::Snapshot::take(&pipeline)?;
+            let executor = match &cluster {
+                None => {
+                    let (dag, _) = load_spec(version.spec()?, &registry)?;
+                    Motor::Local {
+                        ejecutor: Executor::new(registry),
+                        dag,
+                    }
+                }
+                // Repartido: el pipeline va tal y como está escrito, porque
+                // cada máquina resuelve sus secretos y sus rutas.
+                Some(fichero) => {
+                    let config = orch_flight::cluster::ClusterConfig::from_path(fichero)?;
+                    let spec = PipelineSpec::from_yaml_str_as_written(
+                        &pipeline.display().to_string(),
+                        &version.text,
+                    )?;
+                    let registry = std::sync::Arc::try_unwrap(registry)
+                        .map_err(|_| orch_core::OrchError::Other("registro compartido".into()))?;
+                    Motor::Cluster {
+                        coordinador: orch_flight::cluster::Coordinador::new(registry, config)?,
+                        spec,
+                        base: version
+                            .path
+                            .parent()
+                            .map(std::path::Path::to_path_buf)
+                            .unwrap_or_else(|| PathBuf::from(".")),
+                    }
+                }
+            };
 
             // Suscribirse ANTES de arrancar: el canal es broadcast y los
             // eventos anteriores a la suscripción no se recuperan.
@@ -345,7 +527,7 @@ async fn dispatch(
                 .map(|store| orch_store::EventWriter::spawn(store.clone(), executor.subscribe()));
             // Las alertas son otro oyente: avisan aquí, en la terminal, y van
             // al historial y al webhook si el pipeline lo pide.
-            let vigilancia = orch_alert::Vigilancia::para(dag.spec(), store.as_deref());
+            let vigilancia = orch_alert::Vigilancia::para(executor.spec(), store.as_deref());
             let entrega =
                 orch_alert::Entrega::nueva(store.clone(), vigilancia.config.webhook.clone());
             let alertas = orch_alert::vigilar(
@@ -361,7 +543,7 @@ async fn dispatch(
             );
 
             let started_at = chrono::Utc::now();
-            let result = executor.run(&dag).await;
+            let result = executor.run().await;
             // Soltar el ejecutor cierra el canal de eventos: sin esto, un
             // fallo previo a `RunFinished` dejaría esperando a los oyentes.
             drop(executor);
@@ -382,6 +564,8 @@ async fn dispatch(
                 // ya movió los datos: se avisa y se sigue.
                 if let Err(err) = store.record_run(&report, started_at) {
                     eprintln!("aviso: no se pudo guardar la ejecución: {err}");
+                } else if let Err(err) = store.record_run_version(&report.run_id, &version) {
+                    eprintln!("aviso: no se pudo guardar qué versión corrió: {err}");
                 }
             }
 
@@ -411,7 +595,14 @@ pub(crate) fn load(
     path: &std::path::Path,
     registry: &orch_core::Registry,
 ) -> orch_core::Result<(Dag, Vec<orch_core::Pushed>)> {
-    let mut spec = PipelineSpec::from_path(path)?;
+    load_spec(PipelineSpec::from_path(path)?, registry)
+}
+
+/// Como [`load`], con el pipeline ya leído.
+pub(crate) fn load_spec(
+    mut spec: PipelineSpec,
+    registry: &orch_core::Registry,
+) -> orch_core::Result<(Dag, Vec<orch_core::Pushed>)> {
     let pushed = orch_core::pushdown::apply(&mut spec, registry);
     Ok((Dag::build(spec)?, pushed))
 }

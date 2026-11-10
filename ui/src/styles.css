@@ -1076,6 +1076,12 @@ select.control {
 
 /* --- Columnas del nodo: el lineage --- */
 
+/* La sección va dentro de su propio bloque, así que su título es el primer
+   hijo y `.seccion:first-child` le quitaría el margen: lo pone el bloque. */
+.columnas__bloque {
+  margin-top: 22px;
+}
+
 .seccion__cuenta {
   font-weight: 400;
   text-transform: none;
@@ -1199,6 +1205,139 @@ select.control {
 
 .enlace:hover {
   text-decoration: underline;
+}
+
+/* Un enlace en medio de una frase: sin la letra de código de los ids. */
+.enlace--texto {
+  font-family: inherit;
+}
+
+/* --- Versiones --- */
+
+.versiones__estado {
+  margin: 0 0 6px;
+  color: var(--texto-secundario);
+}
+
+.versiones__pendiente {
+  margin-bottom: 8px;
+}
+
+.versiones__acciones {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.versiones__acciones .control {
+  flex: 1;
+  min-width: 220px;
+}
+
+.versiones__pregunta {
+  flex: 1;
+  min-width: 220px;
+  font-size: var(--texto-sm);
+}
+
+.versiones__detalle {
+  margin: 4px 10px 14px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--separador);
+}
+
+.historial {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.historial .fila[aria-expanded="true"] {
+  background: var(--fondo-activo);
+}
+
+.boton--peligro {
+  background: var(--error);
+}
+
+.segmentado--pequeno {
+  margin-bottom: 10px;
+}
+
+/* --- Cambios entre versiones --- */
+
+.cambios {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cambio__linea {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: var(--texto-sm);
+}
+
+/* La marca dice qué pasó; el color sólo ayuda a ojear. */
+.cambio__marca {
+  flex: none;
+  width: 1em;
+  text-align: center;
+  font-family: var(--fuente-mono);
+  font-weight: 600;
+  color: var(--texto-secundario);
+}
+
+.cambio__marca--mas {
+  color: var(--exito);
+}
+
+.cambio__marca--menos {
+  color: var(--error);
+}
+
+.cambio__cuerpo {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cambio__cuerpo code,
+.cambio__valor {
+  font-family: var(--fuente-mono);
+  font-size: var(--texto-xs);
+  user-select: text;
+}
+
+.diff-lineas {
+  margin: 6px 0 0;
+  padding: 8px 0;
+  border-radius: var(--radio);
+  background: var(--fondo-sutil);
+  font-family: var(--fuente-mono);
+  font-size: var(--texto-xs);
+  line-height: 1.55;
+  overflow-x: auto;
+  user-select: text;
+}
+
+.diff-lineas > span {
+  display: block;
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.diff-lineas__mas {
+  background: color-mix(in srgb, var(--exito) 14%, transparent);
+}
+
+.diff-lineas__menos {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
 }
 
 /* --- Paleta de componentes --- */

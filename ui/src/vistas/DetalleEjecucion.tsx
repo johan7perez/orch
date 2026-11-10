@@ -1,7 +1,17 @@
-import type { NodeRow, RunDetail, RunSummary } from "../api";
+import { useEffect, useState } from "react";
+
+import {
+  api,
+  type NodeRow,
+  type RunDetail,
+  type RunSummary,
+  type RunVersion,
+  type VersionDiff,
+} from "../api";
 import { Curva, ritmo } from "../Curva";
 import { claseDePunto, estadoLegible, fechaHora, hora, miles, milisegundos } from "../formato";
 import { Isotipo } from "../Marca";
+import { Cambios } from "./Cambios";
 import { claseAlerta } from "./EnVivo";
 
 interface Props {
@@ -47,6 +57,7 @@ export function DetalleEjecucion({ detalle, resumen }: Props) {
                   <span className={claseDePunto(resumen.status)} />
                   {estadoLegible(resumen.status)}
                 </span>
+                {detalle.version ? <> · versión {detalle.version.label}</> : null}
               </>
             ) : (
               detalle.run_id
@@ -148,6 +159,10 @@ export function DetalleEjecucion({ detalle, resumen }: Props) {
             </p>
           ))}
 
+        {detalle.version ? (
+          <VersionCorrida version={detalle.version} runId={detalle.run_id} />
+        ) : null}
+
         <p className="seccion">Eventos</p>
         <div className="eventos">
           {detalle.events.map((evento) => (
@@ -159,6 +174,55 @@ export function DetalleEjecucion({ detalle, resumen }: Props) {
           ))}
         </div>
       </div>
+    </>
+  );
+}
+
+/** Qué versión del pipeline corrió, y qué ha cambiado desde entonces. */
+function VersionCorrida({ version, runId }: { version: RunVersion; runId: string }) {
+  const [abierto, setAbierto] = useState(false);
+  const [diff, setDiff] = useState<VersionDiff | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!abierto || diff) return;
+    let vigente = true;
+    api
+      .pipelineDiff(version.path, { kind: "run", run_id: runId }, { kind: "working" })
+      .then((d) => vigente && setDiff(d))
+      .catch((e) => vigente && setError(String(e)));
+    return () => {
+      vigente = false;
+    };
+  }, [abierto, diff, version.path, runId]);
+
+  return (
+    <>
+      <p className="seccion">Versión</p>
+      <p className="versiones__estado">
+        Corrió <code>{version.label}</code>
+        {version.git_subject && !version.modified ? <> «{version.git_subject}»</> : null}
+        {version.modified && version.git_commit
+          ? ", con cambios sin guardar sobre ese commit"
+          : null}
+        .{" "}
+        <button
+          className="enlace enlace--texto"
+          aria-expanded={abierto}
+          onClick={() => setAbierto((a) => !a)}
+        >
+          {abierto ? "Ocultar qué ha cambiado" : "Qué ha cambiado desde entonces"}
+        </button>
+      </p>
+      {abierto ? (
+        error ? (
+          <p className="nota nota--error">{error}</p>
+        ) : diff ? (
+          <Cambios cambios={diff.changes} />
+        ) : (
+          <p className="tenue">Comparando…</p>
+        )
+      ) : null}
     </>
   );
 }

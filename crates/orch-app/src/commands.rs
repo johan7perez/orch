@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use orch_core::{Dag, Executor, NodeLineage, PipelineSpec};
-use orch_store::{AlertRow, EventRow, NodeRow, ProgressRow, RunSummary};
+use orch_store::versions::{PipelineHistory, VersionDiff, VersionRef};
+use orch_store::{AlertRow, EventRow, NodeRow, ProgressRow, RunSummary, RunVersion};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -52,6 +53,8 @@ pub struct RunDetail {
     pub progress: Vec<ProgressRow>,
     /// Lo que se avisó durante la ejecución.
     pub alerts: Vec<AlertRow>,
+    /// Qué versión del pipeline corrió.
+    pub version: Option<RunVersion>,
 }
 
 /// Pipelines del directorio actual.
@@ -166,6 +169,7 @@ pub async fn run_detail(state: State<'_, AppState>, run_id: String) -> Response<
             events: store.events_of(&run_id, 500)?,
             progress: store.progress_of(&run_id)?,
             alerts: store.alerts_of(&run_id)?,
+            version: store.run_version(&run_id)?,
             run_id,
         })
     })
@@ -184,7 +188,13 @@ pub async fn start_run(app: AppHandle, state: State<'_, AppState>, path: String)
     let registry = state.registry();
     let store = Arc::clone(&state.store);
 
-    let mut spec = PipelineSpec::from_path(&path).map_err(fail)?;
+    // Se lee una vez: lo que corre y lo que se guarda como «la versión que
+    // corrió» son el mismo texto. Mirar git lanza procesos: fuera del runtime.
+    let version = tokio::task::spawn_blocking(move || orch_version::Snapshot::take(&path))
+        .await
+        .map_err(fail)?
+        .map_err(fail)?;
+    let mut spec = version.spec().map_err(fail)?;
     orch_core::pushdown::apply(&mut spec, &registry);
     let dag = Dag::build(spec).map_err(fail)?;
 
@@ -218,6 +228,8 @@ pub async fn start_run(app: AppHandle, state: State<'_, AppState>, path: String)
             Ok(report) => {
                 if let Err(err) = store.record_run(&report, started_at) {
                     tracing::error!(error = %err, "no se pudo guardar la ejecución");
+                } else if let Err(err) = store.record_run_version(&report.run_id, &version) {
+                    tracing::error!(error = %err, "no se pudo guardar qué versión corrió");
                 }
                 let _ = app.emit("orch://finished", &report);
             }
@@ -345,6 +357,122 @@ pub async fn edit_pipeline(
     let path = PathBuf::from(path);
     let texto = orch_edit::edit_file(&path, &revision, &edits).map_err(fail)?;
     graph_of(&state, &path, &texto)
+}
+
+// --- Versiones -----------------------------------------------------------------
+//
+// Todo pasa por el `git` instalado y por DuckDB, que bloquean: fuera del
+// hilo de la ventana. Guardar y descartar sólo ocurren cuando alguien pulsa
+// el botón; mirar, en cambio, nunca escribe nada.
+
+/// Cuántos commits del fichero se enseñan.
+const HISTORIA: usize = 50;
+
+/// El historial de un pipeline: sus commits, lo que hay sin guardar y las
+/// ejecuciones de cada versión.
+#[tauri::command]
+pub async fn pipeline_history(
+    state: State<'_, AppState>,
+    path: String,
+) -> Response<PipelineHistory> {
+    let store = Arc::clone(&state.store);
+    tokio::task::spawn_blocking(move || {
+        orch_store::versions::history(std::path::Path::new(&path), HISTORIA, Some(&store))
+    })
+    .await
+    .map_err(fail)?
+    .map_err(fail)
+}
+
+/// Qué cambió entre dos versiones de un pipeline.
+#[tauri::command]
+pub async fn pipeline_diff(
+    state: State<'_, AppState>,
+    path: String,
+    from: VersionRef,
+    to: VersionRef,
+) -> Response<VersionDiff> {
+    let store = Arc::clone(&state.store);
+    tokio::task::spawn_blocking(move || {
+        orch_store::versions::diff(std::path::Path::new(&path), &from, &to, Some(&store))
+    })
+    .await
+    .map_err(fail)?
+    .map_err(fail)
+}
+
+/// Guarda el pipeline como una versión nueva: un commit sólo de ese fichero.
+#[tauri::command]
+pub async fn save_version(path: String, message: String) -> Response<orch_version::Commit> {
+    tokio::task::spawn_blocking(move || {
+        let ruta = std::path::Path::new(&path);
+        repo_de(ruta)?.commit(ruta, &message)
+    })
+    .await
+    .map_err(fail)?
+    .map_err(fail)
+}
+
+/// Deja el pipeline como en su última versión guardada.
+///
+/// `revision` es la del texto que el usuario estaba viendo al pulsar: si el
+/// fichero cambió entretanto, no se descarta nada que no haya visto.
+#[tauri::command]
+pub async fn discard_changes(path: String, revision: String) -> Response<()> {
+    tokio::task::spawn_blocking(move || {
+        let ruta = std::path::Path::new(&path);
+        comprobar_revision(ruta, &revision)?;
+        repo_de(ruta)?.discard(ruta)
+    })
+    .await
+    .map_err(fail)?
+    .map_err(fail)
+}
+
+/// Vuelve a poner en el fichero el texto de una versión anterior.
+///
+/// Queda como un cambio sin guardar, igual que si se hubiera escrito a mano:
+/// el historial no se toca, y si no convence se descarta.
+#[tauri::command]
+pub async fn restore_version(
+    state: State<'_, AppState>,
+    path: String,
+    version: VersionRef,
+    revision: String,
+) -> Response<()> {
+    let store = Arc::clone(&state.store);
+    tokio::task::spawn_blocking(move || {
+        let ruta = std::path::Path::new(&path);
+        let repo = orch_version::Repo::of(ruta);
+        let texto = orch_store::versions::load(&version, ruta, repo.as_ref(), Some(&store))?.text;
+        orch_edit::replace_file(ruta, &revision, &texto)
+            .map_err(|err| orch_core::OrchError::Other(err.to_string()))
+    })
+    .await
+    .map_err(fail)?
+    .map_err(fail)
+}
+
+fn repo_de(ruta: &std::path::Path) -> orch_core::Result<orch_version::Repo> {
+    orch_version::Repo::of(ruta).ok_or_else(|| {
+        orch_core::OrchError::Other(format!(
+            "`{}` no está en un repositorio de git (o git no está instalado)",
+            ruta.display()
+        ))
+    })
+}
+
+fn comprobar_revision(ruta: &std::path::Path, revision: &str) -> orch_core::Result<()> {
+    let texto = std::fs::read_to_string(ruta).map_err(|source| orch_core::OrchError::SpecIo {
+        path: ruta.display().to_string(),
+        source,
+    })?;
+    if orch_core::fingerprint(&texto) != revision {
+        return Err(orch_core::OrchError::Other(
+            "el fichero cambió mientras lo mirabas; vuelve a cargarlo antes de descartar".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// De qué columnas de origen sale cada columna de cada nodo.

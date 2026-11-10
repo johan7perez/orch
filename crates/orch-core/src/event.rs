@@ -4,7 +4,7 @@
 //! de la CLI, el escritor de DuckDB y el puente de Tauri hacia la ventana,
 //! cada uno por su cuenta.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::io::IoStats;
 
@@ -13,7 +13,7 @@ use crate::io::IoStats;
 /// telemetría jamás debe aplicar contrapresión sobre los datos.
 pub const EVENT_CHANNEL_CAPACITY: usize = 1024;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum RunEvent {
     RunStarted {
@@ -69,7 +69,7 @@ pub enum RunEvent {
 }
 
 /// Lo que lleva movido un nodo hasta ahora.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeProgress {
     pub node: String,
     pub input: IoStats,

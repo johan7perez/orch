@@ -130,6 +130,35 @@ pub const MIGRATIONS: &[&str] = &[
         message  VARCHAR NOT NULL
     );
     "#,
+    // 6 — qué versión del pipeline corrió en cada ejecución.
+    //
+    // El texto se guarda una vez por versión, no por ejecución: un pipeline
+    // que corre cada hora sin cambiar ocupa lo mismo que uno que corrió una
+    // vez. Con git, además, el último commit que tocó el fichero.
+    r#"
+    CREATE TABLE IF NOT EXISTS pipeline_versions (
+        hash VARCHAR PRIMARY KEY,
+        text VARCHAR NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS run_versions (
+        run_id      VARCHAR PRIMARY KEY,
+        path        VARCHAR NOT NULL,
+        hash        VARCHAR NOT NULL,
+        in_git      BOOLEAN NOT NULL,
+        git_commit  VARCHAR,
+        git_subject VARCHAR,
+        modified    BOOLEAN NOT NULL
+    );
+
+    CREATE OR REPLACE VIEW run_history AS
+    SELECT r.run_id, r.pipeline,
+           make_timestamp(r.started_at_us)  AS started_at,
+           make_timestamp(r.finished_at_us) AS finished_at,
+           r.status, r.elapsed_ms, r.nodes,
+           v.hash AS pipeline_hash, v.git_commit, v.modified
+    FROM runs r LEFT JOIN run_versions v USING (run_id);
+    "#,
 ];
 
 /// Tabla donde se anota qué migraciones se aplicaron.

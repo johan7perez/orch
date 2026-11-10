@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinSet;
 use tracing::Instrument;
@@ -24,7 +24,7 @@ use crate::registry::Registry;
 use crate::schema::{InputSchemas, PortSchema};
 use crate::spec::{NodeKind, RetryPolicy};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeStatus {
     Succeeded,
@@ -35,7 +35,7 @@ pub enum NodeStatus {
     Skipped,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeReport {
     pub id: String,
     pub kind: String,
@@ -48,7 +48,7 @@ pub struct NodeReport {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunReport {
     pub run_id: String,
     pub pipeline: String,
@@ -211,13 +211,33 @@ impl Executor {
     /// quien llama tenga las métricas de todos los nodos y no sólo el primer
     /// error.
     pub async fn run(&self, dag: &Dag) -> Result<RunReport> {
+        self.run_with_id(dag, uuid::Uuid::new_v4().to_string())
+            .await
+    }
+
+    /// Como [`run`](Self::run), con el identificador de la ejecución dado.
+    ///
+    /// Es lo que usa el coordinador de un clúster: cada parte de un pipeline
+    /// repartido corre en su máquina con el mismo `run_id`, de modo que sus
+    /// eventos se juntan en una sola ejecución.
+    ///
+    /// Un nodo con `worker` no se ejecuta aquí: va en otra máquina, y
+    /// correrlo en ésta por descuido podría leer o escribir donde no toca.
+    pub async fn run_with_id(&self, dag: &Dag, run_id: String) -> Result<RunReport> {
+        if let Some(node) = dag.nodes().iter().find(|n| n.worker.is_some()) {
+            return Err(OrchError::Validation(format!(
+                "el nodo `{}` va en el worker `{}`: un pipeline repartido se ejecuta con \
+                 `orch run --cluster`, que manda cada parte a su máquina",
+                node.id,
+                node.worker.as_deref().unwrap_or_default()
+            )));
+        }
         let runners = self.build_runners(dag)?;
         let input_schemas: Vec<Arc<InputSchemas>> = plan_schemas(dag, &runners)
             .await?
             .into_iter()
             .map(Arc::new)
             .collect();
-        let run_id = uuid::Uuid::new_v4().to_string();
         let pipeline = dag.spec().name.clone();
         let settings = dag.spec().settings.clone();
         let n = dag.len();
@@ -328,7 +348,15 @@ impl Executor {
             );
         }
 
-        let muestreo = tokio::spawn(muestrear(self.events.clone(), run_id.clone(), sondas));
+        // Con guarda: si la ejecución se cancela soltando su future (un
+        // coordinador que corta porque otra parte no arrancó), el muestreo
+        // no puede quedarse vivo para siempre con el canal de eventos
+        // abierto. Soltar un `JoinHandle` no para la tarea; esto sí.
+        let muestreo = AbortarAlSoltar(Some(tokio::spawn(muestrear(
+            self.events.clone(),
+            run_id.clone(),
+            sondas,
+        ))));
 
         let mut reports: Vec<Option<NodeReport>> = (0..n).map(|_| None).collect();
         while let Some(joined) = tasks.join_next().await {
@@ -363,8 +391,7 @@ impl Executor {
         // Con todos los nodos terminados, el progreso ya lo cuentan sus
         // `NodeFinished`. Se espera a que el muestreo pare del todo: así
         // ningún `Progress` puede llegar después del `RunFinished`.
-        muestreo.abort();
-        let _ = muestreo.await;
+        muestreo.parar().await;
 
         let succeeded = nodes.iter().all(|r| r.status == NodeStatus::Succeeded);
         let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -399,6 +426,27 @@ pub const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 /// el camino de los datos. Sin nadie escuchando no publica, y si nada se
 /// movió desde la última vez, tampoco: un nodo esperando una hora no llena el
 /// canal de eventos repetidos.
+/// Una tarea que se aborta si se suelta su asa.
+struct AbortarAlSoltar(Option<tokio::task::JoinHandle<()>>);
+
+impl AbortarAlSoltar {
+    /// La para y espera a que haya parado del todo.
+    async fn parar(mut self) {
+        if let Some(tarea) = self.0.take() {
+            tarea.abort();
+            let _ = tarea.await;
+        }
+    }
+}
+
+impl Drop for AbortarAlSoltar {
+    fn drop(&mut self) {
+        if let Some(tarea) = &self.0 {
+            tarea.abort();
+        }
+    }
+}
+
 async fn muestrear(
     events: broadcast::Sender<RunEvent>,
     run_id: String,

@@ -1,0 +1,38 @@
+# Una arista remota, mitad 2 de 2: lee lo que sirve `flight_servir.yaml`.
+#
+#   ORCH_STORE=b.duckdb cargo run -p orch-cli -- run examples/pipelines/flight_leer.yaml
+#
+# Si el otro está en otra máquina: `url: "http://esa-maquina:50051"` y el
+# mismo `token`.
+
+version: 1
+name: clientes-recibidos
+description: Lee por Arrow Flight los clientes que sirve otro pipeline y los agrega por ciudad.
+
+nodes:
+  - id: recibir
+    type: source
+    connector: flight
+    config:
+      url: "http://127.0.0.1:50051"
+      ticket: clientes
+      wait_for_server: 5m
+
+  - id: por_ciudad
+    type: transform
+    op: aggregate
+    config:
+      group_by: [city]
+      aggregates:
+        clientes: "count(*)"
+        gasto: "sum(spend)"
+
+  - id: escribir
+    type: sink
+    connector: csv
+    config:
+      path: ../out/clientes_recibidos.csv
+
+edges:
+  - { from: recibir, to: por_ciudad }
+  - { from: por_ciudad, to: escribir }

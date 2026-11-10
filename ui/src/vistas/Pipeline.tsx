@@ -12,8 +12,9 @@ import { Isotipo } from "../Marca";
 import type { EnCurso } from "../useMotor";
 import { Diseno } from "./Diseno";
 import { EnVivo } from "./EnVivo";
+import { Versiones } from "./Versiones";
 
-type Modo = "vivo" | "diseno";
+type Modo = "vivo" | "diseno" | "versiones";
 
 interface Props {
   pipeline: PipelineInfo | null;
@@ -84,6 +85,14 @@ export function Pipeline({
           >
             Diseño
           </button>
+          <button
+            role="tab"
+            aria-selected={modo === "versiones"}
+            className="segmentado__opcion"
+            onClick={() => setModo("versiones")}
+          >
+            Versiones
+          </button>
         </div>
 
         <button
@@ -97,8 +106,10 @@ export function Pipeline({
 
       {modo === "vivo" ? (
         <EnVivo pipeline={pipeline} enCurso={enCurso} error={error} problema={problema} />
-      ) : (
+      ) : modo === "diseno" ? (
         <Diseno pipeline={pipeline} onEditado={onEditado} />
+      ) : (
+        <Versiones pipeline={pipeline} onEditado={onEditado} />
       )}
     </>
   );

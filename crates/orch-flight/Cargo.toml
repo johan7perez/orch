@@ -1,0 +1,31 @@
+[package]
+name = "orch-flight"
+description = "Aristas remotas de Orch sobre Arrow Flight: un pipeline sirve su flujo y otro lo lee, en otra máquina o en otra herramienta."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+orch-core.workspace = true
+
+arrow-flight.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tokio-stream = { workspace = true, features = ["net"] }
+tonic.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+orch-connectors.workspace = true
+rcgen.workspace = true
+tempfile.workspace = true
+orch-sql.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }

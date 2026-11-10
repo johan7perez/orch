@@ -5,6 +5,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use orch_core::arrow::array::Int64Array;
@@ -14,6 +15,7 @@ use orch_core::{
     Dag, Executor, Input, NoConfig, NodeContext, NodeStatus, OrchError, Output, PipelineSpec,
     Registry, Result, RunEvent, RunReport, Sink, Source,
 };
+use tokio::sync::broadcast;
 
 fn batch(rows: usize, start: i64) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
@@ -625,4 +627,50 @@ edges:
     .await;
     assert!(informe.succeeded, "{informe:?}");
     assert_eq!(progresos.len(), 1, "{progresos:?}");
+}
+
+// --- cancelar -----------------------------------------------------------------
+
+// Un coordinador cancela una parte soltando su future. Lo que tiene que
+// pasar entonces es que no quede nada vivo: ni los nodos ni el muestreo del
+// progreso, que mantendría abierto el canal de eventos para siempre y dejaría
+// esperando a quien lo escucha.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn soltar_una_ejecucion_a_medias_cierra_su_canal_de_eventos() {
+    let probe = Probe::default();
+    let dag = Dag::build(
+        PipelineSpec::from_yaml_str(
+            "test.yaml",
+            r#"
+name: larga
+nodes:
+  - { id: src, type: source, connector: emitter, config: { batches: 1000, rows: 10 } }
+  - { id: lento, type: sink, connector: slow, config: { ms_per_batch: 20 } }
+edges:
+  - { from: src, to: lento }
+"#,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let executor = Executor::new(registry(&probe));
+    let mut oyente = executor.subscribe();
+
+    // Corre lo bastante para que el muestreo haya arrancado, y se suelta.
+    let corrida = tokio::time::timeout(Duration::from_millis(600), executor.run(&dag)).await;
+    assert!(corrida.is_err(), "no debería haber terminado todavía");
+    drop(executor);
+
+    // Se lee hasta que el canal se cierre; lo que llegue antes no importa.
+    let cerrado = tokio::time::timeout(Duration::from_secs(3), async {
+        while !matches!(
+            oyente.recv().await,
+            Err(broadcast::error::RecvError::Closed)
+        ) {}
+    })
+    .await;
+    assert!(
+        cerrado.is_ok(),
+        "el canal de eventos sigue abierto tras cancelar"
+    );
 }

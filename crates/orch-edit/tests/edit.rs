@@ -888,3 +888,25 @@ fn no_se_coloca_un_nodo_que_no_existe() {
         Err(EditError::Invalid(_))
     ));
 }
+
+// --- Sustituir el texto entero (recuperar una versión) ------------------------
+
+#[test]
+fn recuperar_una_version_no_pisa_un_fichero_que_cambio() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let ruta = dir.path().join("p.yaml");
+    std::fs::write(&ruta, "name: uno\n").unwrap();
+    let vista = revision("name: uno\n");
+
+    // Alguien lo cambia mientras se miraba el historial.
+    std::fs::write(&ruta, "name: dos\n").unwrap();
+    let error = orch_edit::replace_file(&ruta, &vista, "name: vieja\n");
+    assert!(matches!(error, Err(EditError::Stale)));
+    assert_eq!(std::fs::read_to_string(&ruta).unwrap(), "name: dos\n");
+
+    // Con la revisión buena, el texto viejo vuelve entero, sin temporales.
+    orch_edit::replace_file(&ruta, &revision("name: dos\n"), "name: vieja\n").unwrap();
+    assert_eq!(std::fs::read_to_string(&ruta).unwrap(), "name: vieja\n");
+    let restos: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+    assert_eq!(restos.len(), 1);
+}

@@ -56,6 +56,7 @@ pub(crate) fn aplicar(antes: &PipelineSpec, edit: &Edit) -> Result<PipelineSpec,
                 id: id.clone(),
                 after: Vec::new(),
                 retry: RetryPolicy::default(),
+                worker: None,
                 kind,
             });
         }

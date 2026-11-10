@@ -13,7 +13,10 @@
 
 mod schema;
 mod store;
+pub mod versions;
 mod writer;
 
-pub use store::{AlertRow, EventRow, NodeRow, ProgressRow, RunSummary, Store};
+pub use store::{
+    AlertRow, EventRow, NodeRow, ProgressRow, RunSummary, RunVersion, Store, VersionRuns,
+};
 pub use writer::EventWriter;

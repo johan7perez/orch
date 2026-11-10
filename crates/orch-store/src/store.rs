@@ -338,11 +338,12 @@ impl Store {
         let conn = self.lock();
         let mut statement = conn
             .prepare(
-                "SELECT run_id, pipeline, started_at_us, status, elapsed_ms, nodes,
+                "SELECT r.run_id, r.pipeline, r.started_at_us, r.status, r.elapsed_ms, r.nodes,
                         (SELECT count(*) FROM node_runs n
-                          WHERE n.run_id = r.run_id AND n.status = 'failed') AS failed_nodes
-                 FROM runs r
-                 ORDER BY started_at_us DESC
+                          WHERE n.run_id = r.run_id AND n.status = 'failed') AS failed_nodes,
+                        v.path, v.hash, v.in_git, v.git_commit, v.git_subject, v.modified
+                 FROM runs r LEFT JOIN run_versions v ON v.run_id = r.run_id
+                 ORDER BY r.started_at_us DESC
                  LIMIT ?",
             )
             .map_err(|e| failed("no se pudo preparar la consulta", e))?;
@@ -357,6 +358,7 @@ impl Store {
                     elapsed_ms: row.get::<_, Option<i64>>(4)?.unwrap_or(0) as u64,
                     nodes: row.get::<_, i32>(5)? as usize,
                     failed_nodes: row.get::<_, i64>(6)? as usize,
+                    version: version_at(row, 7)?,
                 })
             })
             .map_err(|e| failed("no se pudieron leer las ejecuciones", e))?;
@@ -443,7 +445,13 @@ impl Store {
 
         // Los hijos primero: si algo falla a mitad, es preferible dejar
         // huérfanas un puñado de filas de detalle que ejecuciones sin él.
-        for table in ["node_runs", "events", "node_progress", "alerts"] {
+        for table in [
+            "node_runs",
+            "events",
+            "node_progress",
+            "alerts",
+            "run_versions",
+        ] {
             conn.execute(
                 &format!(
                     "DELETE FROM {table}
@@ -454,8 +462,118 @@ impl Store {
             .map_err(|e| failed(&format!("no se pudo podar `{table}`"), e))?;
         }
 
-        conn.execute("DELETE FROM runs WHERE started_at_us < ?", params![cutoff])
-            .map_err(|e| failed("no se pudieron podar las ejecuciones", e))
+        let podadas = conn
+            .execute("DELETE FROM runs WHERE started_at_us < ?", params![cutoff])
+            .map_err(|e| failed("no se pudieron podar las ejecuciones", e))?;
+
+        // Un texto que ya no corresponde a ninguna ejecución no lo va a
+        // pedir nadie.
+        conn.execute(
+            "DELETE FROM pipeline_versions
+             WHERE hash NOT IN (SELECT hash FROM run_versions)",
+            [],
+        )
+        .map_err(|e| failed("no se pudieron podar las versiones", e))?;
+        Ok(podadas)
+    }
+
+    /// Guarda qué versión del pipeline corrió en una ejecución.
+    ///
+    /// El texto entra una sola vez por versión: si ya estaba, no se repite.
+    pub fn record_run_version(
+        &self,
+        run_id: &str,
+        snapshot: &orch_version::Snapshot,
+    ) -> Result<()> {
+        let conn = self.lock();
+        let commit = snapshot.git.as_ref().and_then(|g| g.commit.as_ref());
+        conn.execute(
+            "INSERT OR IGNORE INTO pipeline_versions (hash, text) VALUES (?, ?)",
+            params![snapshot.hash, snapshot.text],
+        )
+        .map_err(|e| failed("no se pudo guardar el texto de la versión", e))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO run_versions
+             (run_id, path, hash, in_git, git_commit, git_subject, modified)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                run_id,
+                snapshot.path.to_string_lossy(),
+                snapshot.hash,
+                snapshot.git.is_some(),
+                commit.map(|c| c.hash.as_str()),
+                commit.map(|c| c.subject.as_str()),
+                snapshot.git.as_ref().is_some_and(|g| g.modified),
+            ],
+        )
+        .map_err(|e| failed("no se pudo guardar la versión de la ejecución", e))?;
+        Ok(())
+    }
+
+    /// Qué versión del pipeline corrió en una ejecución, si se guardó.
+    pub fn run_version(&self, run_id: &str) -> Result<Option<RunVersion>> {
+        let conn = self.lock();
+        let mut statement = conn
+            .prepare(
+                "SELECT path, hash, in_git, git_commit, git_subject, modified
+                 FROM run_versions WHERE run_id = ?",
+            )
+            .map_err(|e| failed("no se pudo preparar la consulta", e))?;
+        let mut filas = statement
+            .query_map(params![run_id], |row| version_at(row, 0))
+            .map_err(|e| failed("no se pudo leer la versión", e))?;
+        match filas.next() {
+            Some(fila) => fila.map_err(|e| failed("no se pudo leer la versión", e)),
+            None => Ok(None),
+        }
+    }
+
+    /// El texto de una versión, por su huella.
+    pub fn version_text(&self, hash: &str) -> Result<Option<String>> {
+        let conn = self.lock();
+        let mut statement = conn
+            .prepare("SELECT text FROM pipeline_versions WHERE hash = ?")
+            .map_err(|e| failed("no se pudo preparar la consulta", e))?;
+        let mut filas = statement
+            .query_map(params![hash], |row| row.get::<_, String>(0))
+            .map_err(|e| failed("no se pudo leer el texto de la versión", e))?;
+        match filas.next() {
+            Some(fila) => fila
+                .map(Some)
+                .map_err(|e| failed("no se pudo leer el texto de la versión", e)),
+            None => Ok(None),
+        }
+    }
+
+    /// Las versiones de un pipeline que han corrido, con cuántas veces y cómo
+    /// fue la última, de la más reciente a la más antigua.
+    pub fn versions_of(&self, path: &str) -> Result<Vec<VersionRuns>> {
+        let conn = self.lock();
+        let mut statement = conn
+            .prepare(
+                "SELECT v.path, v.hash, v.in_git, v.git_commit, v.git_subject, v.modified,
+                        count(*), max(r.started_at_us), arg_max(r.status, r.started_at_us),
+                        arg_max(r.run_id, r.started_at_us)
+                 FROM run_versions v JOIN runs r ON r.run_id = v.run_id
+                 WHERE v.path = ?
+                 GROUP BY ALL
+                 ORDER BY max(r.started_at_us) DESC",
+            )
+            .map_err(|e| failed("no se pudo preparar la consulta", e))?;
+        let filas = statement
+            .query_map(params![path], |row| {
+                Ok(VersionRuns {
+                    version: version_at(row, 0)?.expect("la ruta no es nula"),
+                    runs: row.get::<_, i64>(6)? as usize,
+                    last_started: from_micros(row.get(7)?),
+                    last_status: row.get(8)?,
+                    last_run: row.get(9)?,
+                })
+            })
+            .map_err(|e| failed("no se pudieron leer las versiones", e))?;
+        filas
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| failed("no se pudieron leer las versiones", e))
     }
 
     /// Resuelve un prefijo de `run_id` a la ejecución completa.
@@ -533,6 +651,60 @@ pub struct RunSummary {
     pub elapsed_ms: u64,
     pub nodes: usize,
     pub failed_nodes: usize,
+    /// Qué versión corrió. `None` en las ejecuciones de antes de que se
+    /// guardara.
+    pub version: Option<RunVersion>,
+}
+
+/// Qué versión de un pipeline corrió en una ejecución.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RunVersion {
+    /// El fichero, con su ruta absoluta.
+    pub path: String,
+    /// Huella del texto que corrió; con ella se recupera el texto.
+    pub hash: String,
+    /// Si el pipeline estaba en un repositorio de git.
+    pub in_git: bool,
+    /// El último commit que tocó el fichero.
+    pub git_commit: Option<String>,
+    pub git_subject: Option<String>,
+    /// Si tenía cambios sin guardar respecto a ese commit.
+    pub modified: bool,
+    /// Cómo se nombra: `a1b2c3d`, `a1b2c3d con cambios`, `sin git (#9e8f138)`.
+    pub label: String,
+}
+
+/// Una versión que ha corrido, con sus ejecuciones.
+#[derive(Debug, Clone, Serialize)]
+pub struct VersionRuns {
+    pub version: RunVersion,
+    pub runs: usize,
+    pub last_started: DateTime<Utc>,
+    pub last_status: String,
+    /// La última ejecución de esta versión: con ella se pide su texto
+    /// (`run:<id>`) aunque no esté en git.
+    pub last_run: String,
+}
+
+/// Lee una versión a partir de la columna `i` (ruta, huella, en git, commit,
+/// asunto, modificado). `None` si la ruta es nula: una ejecución sin versión.
+fn version_at(row: &duckdb::Row<'_>, i: usize) -> duckdb::Result<Option<RunVersion>> {
+    let Some(path) = row.get::<_, Option<String>>(i)? else {
+        return Ok(None);
+    };
+    let hash: String = row.get(i + 1)?;
+    let in_git: bool = row.get(i + 2)?;
+    let git_commit: Option<String> = row.get(i + 3)?;
+    let modified: bool = row.get(i + 5)?;
+    Ok(Some(RunVersion {
+        path,
+        label: orch_version::label(&hash, git_commit.as_deref(), modified, in_git),
+        hash,
+        in_git,
+        git_commit,
+        git_subject: row.get(i + 4)?,
+        modified,
+    }))
 }
 
 #[derive(Debug, Clone, Serialize)]

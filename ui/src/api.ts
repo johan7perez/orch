@@ -133,6 +133,87 @@ export interface RunSummary {
   elapsed_ms: number;
   nodes: number;
   failed_nodes: number;
+  /** Qué versión corrió; `null` en ejecuciones de antes de guardarlo. */
+  version: RunVersion | null;
+}
+
+// --- Versiones -------------------------------------------------------------
+
+/** Qué versión de un pipeline corrió en una ejecución. */
+export interface RunVersion {
+  path: string;
+  /** Huella del texto: la misma que la revisión del lienzo. */
+  hash: string;
+  in_git: boolean;
+  git_commit: string | null;
+  git_subject: string | null;
+  /** Tenía cambios sin guardar respecto a `git_commit`. */
+  modified: boolean;
+  /** `a1b2c3d`, `a1b2c3d con cambios`, `sin git (#9e8f138)`. */
+  label: string;
+}
+
+export interface Commit {
+  hash: string;
+  author: string;
+  date: string;
+  subject: string;
+}
+
+export interface FileState {
+  /** El último commit que tocó el fichero; `null` si nunca se guardó. */
+  commit: Commit | null;
+  modified: boolean;
+}
+
+/** Una versión que ha corrido, con sus ejecuciones. */
+export interface VersionRuns {
+  version: RunVersion;
+  runs: number;
+  last_started: string;
+  last_status: string;
+  last_run: string;
+}
+
+export interface CommitRuns {
+  commit: Commit;
+  /** Huella del texto del fichero en ese commit. */
+  hash: string | null;
+  runs: VersionRuns | null;
+}
+
+export interface PipelineHistory {
+  path: string;
+  /** Huella del texto de ahora. */
+  hash: string;
+  /** `null` sin git o fuera de un repositorio. */
+  git: FileState | null;
+  current: VersionRuns | null;
+  commits: CommitRuns[];
+  /** Lo que corrió y no es lo de ahora ni ningún commit de la lista. */
+  others: VersionRuns[];
+}
+
+export type VersionRef =
+  | { kind: "working" }
+  | { kind: "commit"; rev: string }
+  | { kind: "run"; run_id: string };
+
+/** Un cambio entre dos versiones, dicho como pipeline. */
+export type Cambio =
+  | { change: "pipeline"; field: string; before: unknown; after: unknown }
+  | { change: "node"; node: string; field: string; before: unknown; after: unknown }
+  | { change: "node_added"; node: string; kind: string; component: string }
+  | { change: "node_removed"; node: string; kind: string; component: string }
+  | { change: "node_renamed"; from: string; to: string }
+  | { change: "edge_added"; from: string; to: string; port: string }
+  | { change: "edge_removed"; from: string; to: string; port: string }
+  | { change: "layout"; nodes: string[] };
+
+export interface VersionDiff {
+  from: string;
+  to: string;
+  changes: Cambio[];
 }
 
 export interface NodeRow {
@@ -168,6 +249,8 @@ export interface RunDetail {
   progress: ProgressRow[];
   /** Las alertas que se dieron durante esta ejecución. */
   alerts: AlertRow[];
+  /** Qué versión del pipeline corrió. */
+  version: RunVersion | null;
 }
 
 export type TipoAlerta = "fallo" | "colgada" | "lenta";
@@ -291,6 +374,15 @@ export const api = {
     invoke<Graph>("edit_pipeline", { path, revision, edits }),
   catalog: () => invoke<Catalog>("catalog"),
   pipelineLineage: (path: string) => invoke<NodeLineage[]>("pipeline_lineage", { path }),
+  pipelineHistory: (path: string) => invoke<PipelineHistory>("pipeline_history", { path }),
+  pipelineDiff: (path: string, from: VersionRef, to: VersionRef) =>
+    invoke<VersionDiff>("pipeline_diff", { path, from, to }),
+  saveVersion: (path: string, message: string) =>
+    invoke<Commit>("save_version", { path, message }),
+  discardChanges: (path: string, revision: string) =>
+    invoke<void>("discard_changes", { path, revision }),
+  restoreVersion: (path: string, version: VersionRef, revision: string) =>
+    invoke<void>("restore_version", { path, version, revision }),
 };
 
 /** Se engancha al flujo de eventos del motor. */

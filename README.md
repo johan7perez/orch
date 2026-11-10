@@ -4,7 +4,7 @@ Plataforma local de orquestación y transporte de datos. La especificación
 completa está en [doc.md](doc.md); el desglose por fases, en
 [docs/PLAN.md](docs/PLAN.md).
 
-**Estado: Fases 0 a 3 completas.** Motor de DAG con ejecución en
+**Estado: Fases 0 a 4 completas.** Motor de DAG con ejecución en
 streaming, transformaciones SQL sobre DataFusion, conectores
 CSV/Parquet/PostgreSQL/REST, historial en DuckDB y demonio con disparadores
 cron, más la aplicación de escritorio (Tauri) con el lienzo del pipeline, que
@@ -12,8 +12,10 @@ edita el YAML tocando sólo lo que cambia y aguanta pipelines de cientos de
 nodos. Las transformaciones de terceros llegan como plugins de WebAssembly,
 aislados y con un SDK en Rust. El monitoreo enseña el ritmo de cada nodo en
 vivo, avisa si un pipeline falla, se cuelga o va lento, y dice de qué
-columnas de origen sale cada columna de salida. Lo siguiente es la
-escalabilidad (Fase 4).
+columnas de origen sale cada columna de salida. Cada ejecución guarda qué
+versión del pipeline corrió, y se puede comparar con cualquier otra o con un
+commit de git; y un pipeline puede repartirse entre varias máquinas, con
+aristas remotas sobre Arrow Flight y TLS mutuo.
 
 ---
 
@@ -122,6 +124,10 @@ cargo run -p orch-cli -- graph examples/pipelines/csv_to_csv.yaml
 
 # De qué columnas de origen sale cada columna de salida
 cargo run -p orch-cli -- lineage examples/pipelines/join.yaml
+
+# Versiones del pipeline en git, y qué cambió desde la última guardada
+cargo run -p orch-cli -- history examples/pipelines/join.yaml
+cargo run -p orch-cli -- diff examples/pipelines/join.yaml
 
 # Ejecutar, con eventos en vivo
 cargo run -p orch-cli -- run examples/pipelines/csv_to_csv.yaml --follow
@@ -616,6 +622,250 @@ el tipo y el origen de cada una; en un origen, adónde llega cada columna. Cada
 referencia es un botón que salta a ese nodo en el lienzo. `--format json` da
 lo mismo para otras herramientas.
 
+## Versiones
+
+Cada ejecución guarda qué versión del pipeline corrió: el texto exacto del
+YAML (una sola vez por versión, no por ejecución) y, si el fichero está en
+git, el último commit que lo tocó y si tenía cambios sin guardar. Sin git
+también funciona: la huella del texto basta para saber qué corrió y
+compararlo después.
+
+```sh
+# Las versiones del fichero en git, con las ejecuciones de cada una
+cargo run -p orch-cli -- history pipelines/join.yaml
+
+# Qué ha cambiado desde la última versión guardada en git
+cargo run -p orch-cli -- diff pipelines/join.yaml
+
+# Qué ha cambiado desde lo que corrió en una ejecución («ayer funcionaba»)
+cargo run -p orch-cli -- diff pipelines/join.yaml run:6033c8c3
+
+# Entre dos versiones cualesquiera
+cargo run -p orch-cli -- diff pipelines/join.yaml 6996f9f HEAD
+```
+
+```
+pedidos-por-cliente · pipelines/join.yaml
+
+  *                                        cambios sin guardar          2 ejecuciones · última ✓ 2026-11-09 17:47
+  01a9819  2026-11-09 17:47  Pruebas Orch  Cuenta también los enviados  1 ejecución · última ✓ 2026-11-09 17:47
+  6996f9f  2026-11-09 17:35  Pruebas Orch  Ejemplos de partida          1 ejecución · última ✓ 2026-11-09 17:47
+```
+
+```
+pedidos-por-cliente: de lo que corrió en 6033c8c3 (6996f9f) a la copia de trabajo
+
+  ~ pagados.config.where: "status = 'pagado'" → "status IN ('pagado', 'enviado')"
+  ~ cruzar.config.memory_limit_mb: 256 → 512
+  ~ cruzar.config.query
+        SELECT c.city AS ciudad,
+               count(DISTINCT c.id) AS clientes,
+               count(*) AS pedidos,
+      -        round(sum(p.amount), 2) AS facturado
+      +        round(sum(p.amount), 2) AS facturado,
+      +        max(p.amount) AS mayor
+        FROM clientes c JOIN pedidos p ON c.id = p.customer_id GROUP BY c.city ORDER BY facturado DESC
+```
+
+- **El diff habla de pipelines, no de líneas.** Compara los pipelines ya
+  leídos, así que no aparece lo que no cambia el significado: comentarios,
+  orden de claves, un valor por defecto escrito a mano. Un nodo que cambia de
+  nombre y nada más es un renombrado, y sus aristas no salen como quitadas y
+  añadidas. Una query de varias líneas se compara línea a línea. Mover nodos
+  en el lienzo se dice aparte, en una línea.
+- **Una ejecución pertenece al commit cuyo texto corrió**, aunque se
+  guardara después: quien prueba un cambio y luego lo guarda tal cual, corrió
+  esa versión.
+- **Se usa el `git` instalado**, no una librería: se respetan el autor, la
+  firma de commits y los hooks de quien lo use. Mirar el estado al arrancar
+  cuesta unos 11 ms (cuatro procesos de `git`), y nunca ejecuta el
+  `core.fsmonitor` de un repositorio. Orch sólo escribe en git cuando
+  alguien pulsa *Guardar versión*; nunca por su cuenta.
+
+`orch runs` y `orch logs` dicen qué versión corrió (`a1b2c3d`, `a1b2c3d con
+cambios`, `sin git (#9e8f138)`). En DuckDB, `run_history` trae
+`pipeline_hash`, `git_commit` y `modified`, y el texto de cada versión está
+en `pipeline_versions`.
+
+En la aplicación, la vista **Versiones** de cada pipeline enseña lo que hay
+sin guardar (como diff), el historial de commits con las ejecuciones de cada
+uno, y qué cambió en cada versión o desde ella. Desde ahí:
+
+- **Guardar versión** hace un commit sólo de ese fichero, con el mensaje que
+  escribas: lo que tuvieras preparado de otros ficheros se queda como estaba.
+- **Descartar cambios** devuelve el fichero a su última versión, y pide
+  confirmación porque es lo único que pierde trabajo.
+- **Recuperar esta versión** vuelve a poner en el fichero el texto de una
+  versión anterior como un cambio sin guardar: el historial no se reescribe, y
+  si no convence se descarta.
+
+Ninguna de las tres pisa un fichero que haya cambiado mientras lo mirabas. Y
+el detalle de cada ejecución dice qué versión corrió y qué ha cambiado desde
+entonces.
+
+## Aristas remotas (Arrow Flight)
+
+Un pipeline puede servir su resultado para que otro lo lea en otra máquina:
+el sink `flight` lo sirve y el origen `flight` lo lee, como si fueran los dos
+extremos de una arista. Los lotes viajan como Arrow IPC sobre gRPC, con la
+contrapresión de HTTP/2 haciendo de canal acotado: si el que lee va lento, el
+que sirve espera.
+
+```yaml
+# Máquina A, donde están los datos: filtra y sirve.
+- id: servir
+  type: sink
+  connector: flight
+  config:
+    listen: "0.0.0.0:50051"
+    ticket: clientes
+    token: "${env:ORCH_FLIGHT_TOKEN}"
+    wait_for_client: 10m      # cuánto esperar a que alguien venga a leer
+```
+
+```yaml
+# Máquina B: lee lo que sirve A.
+- id: recibir
+  type: source
+  connector: flight
+  config:
+    url: "http://maquina-a:50051"
+    ticket: clientes
+    token: "${env:ORCH_FLIGHT_TOKEN}"
+    wait_for_server: 2m       # A puede arrancar después que B
+```
+
+- **Cada pipeline arranca cuando quiere.** El que lee insiste mientras el
+  servidor no escucha, y el que sirve espera a su consumidor.
+- **Un fallo cruza la red como fallo.** Si el pipeline que sirve falla a
+  mitad, el que lee falla con su motivo, no termina con un resultado cortado.
+  Si el que lee deja de leer antes del final (un `limit`, una caída), el que
+  sirve lo da por fallido: desde allí no se distinguen.
+- **Un flujo, un consumidor.** Cada ejecución sirve su flujo una vez, como
+  cualquier otra arista.
+- **Seguro por defecto.** Escuchar fuera de la propia máquina exige
+  autenticar a quien lee: un `token` (va como `Authorization: Bearer` y se
+  compara en tiempo constante) o TLS mutuo.
+
+Entre máquinas, lo normal es ir cifrado. Las rutas de los certificados
+cuelgan de la carpeta del pipeline, como `path`:
+
+```yaml
+# Quien sirve: su certificado y, con `client_ca`, sólo acepta a quien
+# presente uno firmado por esa CA (TLS mutuo; no hace falta token).
+tls: { cert: certs/a.pem, key: certs/a.key, client_ca: certs/ca.pem }
+
+# Quien lee, con `url: "https://maquina-a:50051"`: con qué CA verificar al
+# servidor (sin `ca`, las del sistema) y su propio certificado.
+tls: { ca: certs/ca.pem, cert: certs/b.pem, key: certs/b.key }
+```
+
+Un certificado que no vale falla al momento, sin agotar `wait_for_server`:
+eso no se arregla esperando. Y un certificado que no está falla en
+`orch validate`.
+- **Para probar los dos extremos en una misma máquina**, cada `orch run`
+  con su propio `--store`: el historial no admite dos procesos a la vez
+  (ver limitaciones). En dos máquinas no hace falta pensarlo.
+- **Habla Flight estándar.** El origen lee de cualquier servidor que sirva un
+  flujo con DoGet, y el sink sirve a cualquier cliente Flight. Está probado
+  con el cliente de `arrow-flight` (Rust); con pyarrow no, porque no está
+  instalado aquí.
+
+Lo que cuesta, medido con 20 M de filas en esta máquina
+(`cargo run --release -p orch-flight --example transporte`):
+
+| Camino | Sin texto | Con texto |
+|---|---|---|
+| En memoria (la arista de siempre) | 41–48 ms | 1,59–1,65 s |
+| Sólo codificar y decodificar IPC | 61–67 ms | 0,40–0,41 s |
+| Flight por la red local | 432–461 ms (~700 MB/s) | 1,96–2,00 s |
+
+Sin trabajo en los extremos, Flight mueve unos 700 MB/s, unos 5,6 Gbit/s:
+más de lo que da una red de 1 Gbit, así que ahí el límite es el cable.
+Serializar no es lo caro (5 GB/s); lo es gRPC. Con un origen que trabaja de
+verdad, la arista remota añade un 25 %.
+
+## Un pipeline repartido entre máquinas
+
+Cada nodo puede correr en otra máquina: basta con `worker:`. Los que no lo
+llevan corren donde se lanza el pipeline.
+
+```yaml
+nodes:
+  - { id: leer, type: source, connector: csv, worker: a, config: { path: customers.csv } }
+  - { id: relevantes, type: transform, op: filter, worker: a, config: { where: "spend >= 500" } }
+  - id: por_ciudad
+    type: transform
+    op: aggregate
+    worker: b
+    config: { group_by: [city], aggregates: { clientes: "count(*)", gasto: "sum(spend)" } }
+  - { id: escribir, type: sink, connector: csv, config: { path: por_ciudad.csv } }
+```
+
+Cómo llegar a cada máquina va aparte, porque depende del despliegue y no del
+pipeline:
+
+```yaml
+# cluster.yaml (las rutas, desde este fichero)
+tls: { ca: certs/ca.pem, cert: certs/coordinador.pem, key: certs/coordinador.key }
+workers:
+  a: "https://maquina-a:50100"
+  b: "https://maquina-b:50100"
+# Sólo si algún nodo de aquí alimenta a un worker: dónde escucha el
+# coordinador y cómo lo ven los workers.
+# listen: "0.0.0.0:50100"
+# url: "https://coordinador:50100"
+wait: 1m      # cuánto espera cada parte a la de enfrente
+```
+
+```sh
+# En cada máquina, un worker con su certificado de la CA del clúster
+orch worker --listen 0.0.0.0:50100 --ca ca.pem --cert a.pem --key a.key --dir /datos
+
+# Y donde se lanza, el pipeline con el clúster
+orch run repartido.yaml --cluster cluster.yaml --follow
+```
+
+```
+▶ clientes-repartido (8 nodos)
+  ✓ leer — in 0 filas / out 8 filas en 3 ms
+  ✓ relevantes — in 8 filas / out 6 filas en 9 ms
+  ✓ relevantes→b — in 6 filas / out 0 filas en 128 ms
+  ✓ relevantes@b — in 0 filas / out 6 filas en 197 ms
+  ✓ por_ciudad — in 6 filas / out 5 filas en 240 ms
+  ✓ escribir — in 5 filas / out 0 filas en 347 ms
+✓ clientes-repartido terminó en 348 ms
+```
+
+- **Un pipeline repartido es varios pipelines locales unidos por aristas
+  remotas.** El coordinador parte el DAG donde una arista cruza de máquina:
+  `relevantes→b` la envía desde `a` y `relevantes@b` la recibe en `b`, sobre
+  Arrow Flight. El motor de cada máquina es el de siempre, y lo que viaja de
+  `a` a `b` va directo, sin pasar por el coordinador.
+- **Una sola ejecución.** Un `run_id`, los eventos de todas las máquinas en
+  `--follow`, en el historial y en las alertas, y un informe con los nodos
+  del pipeline primero; las aristas salen como `edge` y no cuentan como
+  filas escritas.
+- **Cada máquina resuelve lo suyo.** Un worker recibe su parte tal y como
+  está escrita: los `${env:...}` se resuelven con sus variables y las rutas
+  relativas cuelgan de su `--dir`. Los secretos de una máquina no pasan por
+  otra.
+- **Un fallo viaja; una parte que no puede correr, cancela.** Si un nodo
+  falla, el fallo llega por las aristas como en una sola máquina. Si una parte
+  ni arranca (el worker no responde, le falta un conector) o se pierde a
+  mitad, las demás se cancelan en vez de esperar una arista que no llegará:
+  con un worker caído, `orch run` falla en menos de un segundo diciendo cuál.
+- **TLS mutuo, sin excepciones.** Un worker ejecuta lo que le manden, y un
+  pipeline puede leer y escribir ficheros: sólo entra quien presente un
+  certificado de la CA del clúster, y el coordinador sólo habla con workers
+  de esa CA.
+- **Un `orch run` sin `--cluster` se niega** a ejecutar un pipeline con
+  nodos `worker`: correrlo en la máquina equivocada podría leer o escribir
+  donde no toca.
+
+Los certificados se pueden hacer con `openssl` (una CA, y un certificado por
+máquina con su nombre o IP en `subjectAltName`).
+
 ## Plugins WASM
 
 Lo que Orch no trae se puede añadir como plugin: una transformación escrita en
@@ -708,6 +958,8 @@ crates/
   orch-store/        historial de ejecuciones y métricas, en DuckDB
   orch-schedule/     disparadores cron y encadenamiento entre pipelines
   orch-edit/         edición del YAML desde el lienzo, tocando sólo lo que cambia
+  orch-version/      versiones de cada ejecución, historial en git y diff de pipelines
+  orch-flight/       aristas remotas sobre Arrow Flight, workers y coordinador de un clúster
   orch-wasm/         carga y ejecución de plugins WASM, aislados
   orch-plugin/       SDK para escribir plugins en Rust
   orch-connectors/   implementaciones nativas (CSV, generador, null, transformaciones)
@@ -884,6 +1136,14 @@ también hace usable el ciclo de desarrollo.
   se ven dentro de la ventana; para enterarse con ella cerrada, el webhook.
 - **El lineage se para en los orígenes.** Si un origen lee un fichero que
   escribe otro pipeline (o un sink del mismo), no se sigue hasta allí.
+- **El historial es de un solo proceso.** DuckDB no deja que dos procesos
+  escriban el mismo fichero: un segundo `orch run` con el mismo `--store`
+  mientras otro corre (o con la aplicación abierta sobre ese historial) no
+  arranca. El demonio no tiene el problema porque todo va en un proceso; para
+  varios `orch run` a la vez, `--store` distintos o `--no-store`.
+- **Un pipeline repartido sólo se lanza con `orch run --cluster`.** El
+  demonio y la aplicación todavía no saben repartir; y una espera `after`
+  entre nodos de máquinas distintas no se admite.
 - **Los plugins sólo pueden ser transformaciones.** Un origen o un destino
   necesitan red o disco, y darles ese acceso a un plugin pide decidir antes
   cómo se conceden los permisos.

@@ -38,7 +38,7 @@ export function Columnas({ nodo, linaje, onIrA }: Props) {
   const columnas = propio?.columns ?? null;
 
   return (
-    <section aria-busy={linaje.cargando}>
+    <section className="columnas__bloque" aria-busy={linaje.cargando}>
       <p className="seccion">
         Columnas
         {columnas ? <span className="seccion__cuenta"> · {columnas.length}</span> : null}

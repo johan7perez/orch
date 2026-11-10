@@ -375,7 +375,7 @@ pub fn print_runs(runs: &[orch_store::RunSummary]) {
         .max(8);
 
     println!(
-        "  {:<8}  {:<pipeline_width$}  {:<19}  {:<9}  {:>10}  {:>7}",
+        "  {:<8}  {:<pipeline_width$}  {:<19}  {:<9}  {:>10}  {:>7}  versión",
         "id",
         "pipeline",
         "arrancó",
@@ -391,20 +391,33 @@ pub fn print_runs(runs: &[orch_store::RunSummary]) {
             run.nodes.to_string()
         };
         println!(
-            "  {:<8}  {:<pipeline_width$}  {:<19}  {:<9}  {:>10}  {:>7}",
+            "  {:<8}  {:<pipeline_width$}  {:<19}  {:<9}  {:>10}  {:>7}  {}",
             short_id(&run.run_id),
             run.pipeline,
             run.started_at.format("%Y-%m-%d %H:%M:%S"),
             translate_status(&run.status),
             human_ms(run.elapsed_ms),
             nodes,
+            run.version.as_ref().map_or("—", |v| v.label.as_str()),
             pipeline_width = pipeline_width
         );
     }
 }
 
-pub fn print_logs(run_id: &str, nodes: &[orch_store::NodeRow], events: &[orch_store::EventRow]) {
-    println!("run_id : {run_id}");
+pub fn print_logs(
+    run_id: &str,
+    version: Option<&orch_store::RunVersion>,
+    nodes: &[orch_store::NodeRow],
+    events: &[orch_store::EventRow],
+) {
+    println!("run_id  : {run_id}");
+    if let Some(v) = version {
+        match &v.git_subject {
+            Some(asunto) if !v.modified => println!("versión : {} «{asunto}»", v.label),
+            _ => println!("versión : {}", v.label),
+        }
+        println!("fichero : {}", v.path);
+    }
     println!();
 
     let width = nodes.iter().map(|n| n.node.len()).max().unwrap_or(4).max(4);
@@ -482,11 +495,11 @@ pub fn print_logs(run_id: &str, nodes: &[orch_store::NodeRow], events: &[orch_st
     }
 }
 
-fn short_id(run_id: &str) -> &str {
+pub(crate) fn short_id(run_id: &str) -> &str {
     &run_id[..run_id.len().min(8)]
 }
 
-fn translate_status(status: &str) -> &str {
+pub(crate) fn translate_status(status: &str) -> &str {
     match status {
         "succeeded" => "correcto",
         "failed" => "fallido",

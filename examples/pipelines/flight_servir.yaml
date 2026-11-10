@@ -1,0 +1,39 @@
+# Una arista remota, mitad 1 de 2: filtra y sirve el resultado por Arrow Flight.
+#
+#   ORCH_STORE=a.duckdb cargo run -p orch-cli -- run examples/pipelines/flight_servir.yaml
+#
+# Y a la vez, en otra terminal (o en otra máquina), `flight_leer.yaml`. Cada
+# uno arranca cuando quiere: el que lee insiste y éste espera a que alguien
+# venga a leer. En la misma máquina, cada uno con su propio `ORCH_STORE`.
+#
+# Para servir a otras máquinas: `listen: "0.0.0.0:50051"` y un `token`
+# (`${env:ORCH_FLIGHT_TOKEN}`), que es obligatorio en cuanto se escucha fuera.
+
+version: 1
+name: clientes-servidos
+description: Filtra los clientes con gasto relevante y los sirve por Arrow Flight.
+
+nodes:
+  - id: leer_clientes
+    type: source
+    connector: csv
+    config:
+      path: ../data/customers.csv
+
+  - id: relevantes
+    type: transform
+    op: filter
+    config:
+      where: "spend >= 500"
+
+  - id: servir
+    type: sink
+    connector: flight
+    config:
+      listen: "127.0.0.1:50051"
+      ticket: clientes
+      wait_for_client: 5m
+
+edges:
+  - { from: leer_clientes, to: relevantes }
+  - { from: relevantes, to: servir }

@@ -214,17 +214,10 @@ fn primera_diferencia(a: &Value, b: &Value, ruta: &str) -> Option<String> {
 /// Huella del contenido de un fichero.
 ///
 /// La UI la recibe al abrir el pipeline y la devuelve al editar: si no
-/// coincide, alguien cambió el fichero por debajo. No es criptográfica ni
-/// falta que hace; sólo tiene que cambiar cuando cambia el texto.
+/// coincide, alguien cambió el fichero por debajo. Es la misma huella con la
+/// que el historial identifica qué versión corrió en cada ejecución.
 pub fn revision(texto: &str) -> String {
-    // FNV-1a de 64 bits: estable entre versiones de Rust, a diferencia de
-    // `DefaultHasher`, y sin dependencias.
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in texto.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("{hash:016x}")
+    orch_core::fingerprint(texto)
 }
 
 /// Aplica los cambios a un fichero, si sigue siendo el que se abrió.
@@ -250,6 +243,27 @@ pub fn edit_file(
         escribir_atomico(path, &nuevo).map_err(io)?;
     }
     Ok(nuevo)
+}
+
+/// Sustituye el texto entero del fichero, si sigue siendo el que se abrió.
+///
+/// Es lo que hace recuperar una versión anterior: el texto viejo vuelve al
+/// fichero como un cambio más, sin tocar el historial. Igual que
+/// [`edit_file`], no pisa un fichero que cambió por debajo y escribe de forma
+/// atómica.
+pub fn replace_file(path: &Path, revision_esperada: &str, nuevo: &str) -> Result<(), EditError> {
+    let io = |source| EditError::Io {
+        path: path.display().to_string(),
+        source,
+    };
+    let texto = std::fs::read_to_string(path).map_err(io)?;
+    if revision(&texto) != revision_esperada {
+        return Err(EditError::Stale);
+    }
+    if nuevo != texto {
+        escribir_atomico(path, nuevo).map_err(io)?;
+    }
+    Ok(())
 }
 
 fn escribir_atomico(path: &Path, texto: &str) -> std::io::Result<()> {
