@@ -11,6 +11,7 @@
 //! ejecución: se engancha al canal `broadcast` del ejecutor, que descarta
 //! eventos si el consumidor se retrasa en vez de aplicar contrapresión.
 
+mod conexion;
 mod schema;
 mod store;
 pub mod versions;

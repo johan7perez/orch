@@ -1,13 +1,13 @@
 //! Lectura y escritura del almacén.
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
-use duckdb::{params, Connection};
+use duckdb::params;
 use orch_core::{NodeStatus, OrchError, Result, RunReport};
 use serde::Serialize;
 
+use crate::conexion::{Fuente, Prestada};
 use crate::schema::{MIGRATIONS, VERSION_TABLE};
 
 fn failed(context: &str, err: impl std::fmt::Display) -> OrchError {
@@ -16,11 +16,14 @@ fn failed(context: &str, err: impl std::fmt::Display) -> OrchError {
 
 /// Un fichero DuckDB con el historial de ejecuciones.
 ///
-/// La conexión va tras un `Mutex` porque la de DuckDB no es `Sync`. No es un
-/// cuello de botella: sólo la usan el escritor de eventos y los comandos de
-/// consulta, nunca el camino de los datos.
+/// El fichero no se retiene: se abre al usarlo y se suelta al quedar ocioso
+/// (ver [`crate::conexion`]), así que varios procesos —la aplicación, el
+/// demonio, un `orch run`— comparten el mismo historial. Dentro de un
+/// proceso, la conexión va tras un `Mutex` porque la de DuckDB no es `Sync`;
+/// no es un cuello de botella: sólo la usan el escritor de eventos y las
+/// consultas, nunca el camino de los datos.
 pub struct Store {
-    conn: Mutex<Connection>,
+    fuente: Fuente,
 }
 
 impl Store {
@@ -32,27 +35,22 @@ impl Store {
                     .map_err(|e| failed(&format!("no se pudo crear `{}`", parent.display()), e))?;
             }
         }
-        let conn = Connection::open(path)
-            .map_err(|e| failed(&format!("no se pudo abrir `{}`", path.display()), e))?;
-        Self::from_connection(conn)
+        Self::con(Fuente::fichero(path))
     }
 
     /// Almacén en memoria, para tests.
     pub fn in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory().map_err(|e| failed("no se pudo abrir", e))?;
-        Self::from_connection(conn)
+        Self::con(Fuente::memoria()?)
     }
 
-    fn from_connection(conn: Connection) -> Result<Self> {
-        let store = Self {
-            conn: Mutex::new(conn),
-        };
+    fn con(fuente: Fuente) -> Result<Self> {
+        let store = Self { fuente };
         store.migrate()?;
         Ok(store)
     }
 
     fn migrate(&self) -> Result<()> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         conn.execute_batch(VERSION_TABLE)
             .map_err(|e| failed("no se pudo preparar el control de versiones", e))?;
 
@@ -81,10 +79,9 @@ impl Store {
         Ok(())
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// La conexión, abriendo el fichero si estaba suelto.
+    fn lock(&self) -> Result<Prestada<'_>> {
+        self.fuente.prestar()
     }
 
     /// Guarda el resultado de una ejecución.
@@ -92,7 +89,7 @@ impl Store {
     /// Se reescribe si ya existía: una ejecución se anota como `running` en
     /// cuanto arranca y se completa al terminar.
     pub fn record_run(&self, report: &RunReport, started_at: DateTime<Utc>) -> Result<()> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         conn.execute("BEGIN", [])
             .map_err(|e| failed("no se pudo abrir la transacción", e))?;
 
@@ -175,7 +172,7 @@ impl Store {
         if events.is_empty() {
             return Ok(());
         }
-        let conn = self.lock();
+        let conn = self.lock()?;
         let mut appender = conn
             .appender("events")
             .map_err(|e| failed("no se pudo abrir el appender de eventos", e))?;
@@ -203,7 +200,7 @@ impl Store {
         if rows.is_empty() {
             return Ok(());
         }
-        let conn = self.lock();
+        let conn = self.lock()?;
         let mut appender = conn
             .appender("node_progress")
             .map_err(|e| failed("no se pudo abrir el appender de progreso", e))?;
@@ -230,7 +227,7 @@ impl Store {
 
     /// Cómo avanzó cada nodo de una ejecución, en orden de tiempo.
     pub fn progress_of(&self, run_id: &str) -> Result<Vec<ProgressRow>> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         let mut statement = conn
             .prepare(
                 "SELECT run_id, node, at_ms, rows_in, rows_out, bytes_in, bytes_out,
@@ -266,7 +263,7 @@ impl Store {
     /// alerta de «va más lenta de lo normal» con una sola ejecución previa
     /// sería una lotería.
     pub fn typical_elapsed_ms(&self, pipeline: &str, ultimas: usize) -> Result<Option<u64>> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         let (mediana, cuantas): (Option<f64>, i64) = conn
             .query_row(
                 "SELECT median(elapsed_ms), count(*) FROM (
@@ -283,7 +280,7 @@ impl Store {
 
     /// Guarda una alerta que se dio.
     pub fn record_alert(&self, alerta: &AlertRow) -> Result<()> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT INTO alerts (run_id, pipeline, at_us, kind, node, message)
              VALUES (?, ?, ?, ?, ?, ?)",
@@ -311,7 +308,7 @@ impl Store {
     }
 
     fn alerts_where(&self, filtro: &str, valores: impl duckdb::Params) -> Result<Vec<AlertRow>> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         let mut statement = conn
             .prepare(&format!(
                 "SELECT run_id, pipeline, at_us, kind, node, message FROM alerts {filtro}"
@@ -335,7 +332,7 @@ impl Store {
 
     /// Últimas ejecuciones, de la más reciente a la más antigua.
     pub fn recent_runs(&self, limit: usize) -> Result<Vec<RunSummary>> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         let mut statement = conn
             .prepare(
                 "SELECT r.run_id, r.pipeline, r.started_at_us, r.status, r.elapsed_ms, r.nodes,
@@ -369,7 +366,7 @@ impl Store {
 
     /// Detalle por nodo de una ejecución, con el throughput ya calculado.
     pub fn nodes_of(&self, run_id: &str) -> Result<Vec<NodeRow>> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         let mut statement = conn
             .prepare(
                 "SELECT n.node, n.kind, n.component, n.status, n.attempts,
@@ -410,7 +407,7 @@ impl Store {
 
     /// Eventos de una ejecución, en orden.
     pub fn events_of(&self, run_id: &str, limit: usize) -> Result<Vec<EventRow>> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         let mut statement = conn
             .prepare(
                 "SELECT seq, at_us, kind, node, detail
@@ -441,7 +438,7 @@ impl Store {
     /// un demonio que dispara cada minuto se nota en días.
     pub fn prune(&self, before: DateTime<Utc>) -> Result<usize> {
         let cutoff = before.timestamp_micros();
-        let conn = self.lock();
+        let conn = self.lock()?;
 
         // Los hijos primero: si algo falla a mitad, es preferible dejar
         // huérfanas un puñado de filas de detalle que ejecuciones sin él.
@@ -485,7 +482,7 @@ impl Store {
         run_id: &str,
         snapshot: &orch_version::Snapshot,
     ) -> Result<()> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         let commit = snapshot.git.as_ref().and_then(|g| g.commit.as_ref());
         conn.execute(
             "INSERT OR IGNORE INTO pipeline_versions (hash, text) VALUES (?, ?)",
@@ -512,7 +509,7 @@ impl Store {
 
     /// Qué versión del pipeline corrió en una ejecución, si se guardó.
     pub fn run_version(&self, run_id: &str) -> Result<Option<RunVersion>> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         let mut statement = conn
             .prepare(
                 "SELECT path, hash, in_git, git_commit, git_subject, modified
@@ -530,7 +527,7 @@ impl Store {
 
     /// El texto de una versión, por su huella.
     pub fn version_text(&self, hash: &str) -> Result<Option<String>> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         let mut statement = conn
             .prepare("SELECT text FROM pipeline_versions WHERE hash = ?")
             .map_err(|e| failed("no se pudo preparar la consulta", e))?;
@@ -548,7 +545,7 @@ impl Store {
     /// Las versiones de un pipeline que han corrido, con cuántas veces y cómo
     /// fue la última, de la más reciente a la más antigua.
     pub fn versions_of(&self, path: &str) -> Result<Vec<VersionRuns>> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         let mut statement = conn
             .prepare(
                 "SELECT v.path, v.hash, v.in_git, v.git_commit, v.git_subject, v.modified,
@@ -580,7 +577,7 @@ impl Store {
     ///
     /// Los identificadores son UUID: nadie va a teclear los 36 caracteres.
     pub fn resolve_run(&self, prefix: &str) -> Result<String> {
-        let conn = self.lock();
+        let conn = self.lock()?;
         let mut statement = conn
             .prepare("SELECT run_id FROM runs WHERE run_id LIKE ? ORDER BY started_at_us DESC")
             .map_err(|e| failed("no se pudo preparar la consulta", e))?;

@@ -24,7 +24,12 @@ use crate::store::{PendingEvent, ProgressRow, Store};
 /// Eventos acumulados antes de escribir.
 const BATCH: usize = 256;
 /// Tiempo máximo que un evento espera en el buffer.
-const FLUSH_EVERY: Duration = Duration::from_millis(200);
+///
+/// Un segundo, no menos: cada volcado abre el fichero si estaba suelto, y
+/// entre uno y otro tiene que quedar hueco para que otro proceso (la
+/// aplicación, otro `orch run`) use el mismo historial. Lo que se ve en vivo
+/// no depende de esto: llega por el canal de eventos, no del historial.
+const FLUSH_EVERY: Duration = Duration::from_secs(1);
 
 pub struct EventWriter;
 

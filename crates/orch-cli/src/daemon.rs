@@ -4,14 +4,18 @@
 //! arranca lo que diga y le avisa cuando algo termina. Toda la lógica de
 //! concurrencia y encadenamientos vive allí, donde se puede probar sin
 //! esperas.
+//!
+//! Vigila además su carpeta: un pipeline nuevo, cambiado o borrado se nota
+//! en un par de segundos, sin reiniciar. Lo que esté corriendo termina con la
+//! versión con la que arrancó.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use orch_core::{Executor, OrchError, Registry, Result, RunReport};
+use orch_core::{Executor, Registry, Result, RunReport};
 use orch_schedule::{discover, Launch, Reason, Scheduler};
 use orch_store::{EventWriter, Store};
 
@@ -21,6 +25,14 @@ use orch_store::{EventWriter, Store};
 /// responde rápido.
 const TICK: Duration = Duration::from_secs(1);
 
+/// Cada cuánto se mira si cambió algo en la carpeta.
+///
+/// Se compara el contenido de cada pipeline, no la fecha del fichero: tocarlo
+/// sin cambiarlo no es un cambio. Leer unos YAML pequeños cada dos segundos
+/// no cuesta nada, y no depende de que el sistema avise de los cambios (que
+/// en una carpeta de red, por ejemplo, no siempre lo hace).
+const RELECTURA: Duration = Duration::from_secs(2);
+
 pub struct DaemonOptions {
     pub dir: PathBuf,
     pub store: PathBuf,
@@ -29,6 +41,7 @@ pub struct DaemonOptions {
 }
 
 pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> {
+    let mut vistas = huellas(&options.dir);
     let found = discover(&options.dir)?;
     // Un fichero roto se reporta pero no impide arrancar con los demás: si
     // uno de veinte tiene un secreto sin definir, los otros diecinueve
@@ -43,12 +56,6 @@ pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> 
     for problem in &found.problems {
         eprintln!("aviso: {problem}");
     }
-    if found.is_empty() {
-        return Err(OrchError::Other(format!(
-            "no hay ningún pipeline utilizable en `{}`",
-            options.dir.display()
-        )));
-    }
 
     // Se validan todos al arrancar. Un demonio que descubre a las 3 de la
     // mañana que un pipeline no compila no sirve de nada.
@@ -62,11 +69,6 @@ pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> 
             }
             Err(err) => eprintln!("aviso: `{}` no es válido: {err}", entry.name),
         }
-    }
-    if entries.is_empty() {
-        return Err(OrchError::Other(
-            "ningún pipeline del directorio es válido".to_string(),
-        ));
     }
 
     // `discover` ya avisa de un `after` que apunta a un nombre inexistente,
@@ -93,10 +95,12 @@ pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> 
     for entry in &entries {
         println!("  {:<width$}  {}", entry.name, entry.describe_trigger());
     }
-    if !entries.iter().any(|e| e.is_triggered()) {
-        println!("  (ninguno tiene disparadores: el demonio no hará nada)");
+    if entries.is_empty() {
+        println!("  (por ahora ninguno utilizable: se vigila la carpeta)");
+    } else if !entries.iter().any(|e| e.is_triggered()) {
+        println!("  (ninguno tiene disparadores: por ahora el demonio no hará nada)");
     }
-    println!("Ctrl-C para parar");
+    println!("Los cambios en la carpeta se recogen solos. Ctrl-C para parar");
 
     let store = Arc::new(Store::open(&options.store)?);
     prune(&store, options.keep_days);
@@ -106,6 +110,8 @@ pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> 
     let mut running: tokio::task::JoinSet<(String, bool)> = tokio::task::JoinSet::new();
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut relectura = tokio::time::interval(RELECTURA);
+    relectura.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut stopping = false;
 
     loop {
@@ -126,6 +132,15 @@ pub async fn run(registry: Arc<Registry>, options: DaemonOptions) -> Result<()> 
                         }
                     }
                     Err(err) => tracing::error!(error = %err, "una ejecución terminó de forma anómala"),
+                }
+            }
+
+            _ = relectura.tick(), if !stopping => {
+                let ahora = huellas(&options.dir);
+                if ahora != vistas {
+                    recargar(&registry, &options.dir, &vistas, &ahora, &mut paths, &mut scheduler)
+                        .await;
+                    vistas = ahora;
                 }
             }
 
@@ -248,6 +263,126 @@ fn prune(store: &Store, keep_days: Option<i64>) {
         Ok(removed) => println!("podadas {removed} ejecución(es) de más de {days} día(s)"),
         Err(err) => tracing::error!(error = %err, "no se pudo podar el historial"),
     }
+}
+
+/// El contenido de cada pipeline de la carpeta, por su huella.
+fn huellas(dir: &Path) -> BTreeMap<PathBuf, String> {
+    let Ok(entradas) = std::fs::read_dir(dir) else {
+        return BTreeMap::new();
+    };
+    entradas
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                    e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml")
+                })
+        })
+        .filter_map(|p| {
+            let texto = std::fs::read_to_string(&p).ok()?;
+            Some((p, orch_core::fingerprint(&texto)))
+        })
+        .collect()
+}
+
+/// Vuelve a leer la carpeta y le cuenta al planificador lo que hay ahora.
+///
+/// Sólo se valida lo que cambió: lo demás ya se validó. Un pipeline que se
+/// rompe (a medio editar, un secreto que falta) deja de dispararse con un
+/// aviso, y vuelve en cuanto se arregla.
+async fn recargar(
+    registry: &Arc<Registry>,
+    dir: &Path,
+    antes: &BTreeMap<PathBuf, String>,
+    ahora: &BTreeMap<PathBuf, String>,
+    paths: &mut HashMap<String, PathBuf>,
+    scheduler: &mut Scheduler,
+) {
+    let hora = || Utc::now().format("%H:%M:%S");
+    let tocados: BTreeSet<&PathBuf> = ahora
+        .iter()
+        .filter(|(p, h)| antes.get(*p) != Some(*h))
+        .map(|(p, _)| p)
+        .collect();
+
+    let found = match discover(dir) {
+        Ok(found) => found,
+        Err(err) => {
+            eprintln!("{}  aviso: no se pudo releer la carpeta: {err}", hora());
+            return;
+        }
+    };
+    for roto in found.broken.iter().filter(|b| tocados.contains(&b.path)) {
+        eprintln!(
+            "{}  ✗ `{}` no se puede cargar: {}",
+            hora(),
+            nombre_de(&roto.path),
+            roto.error
+        );
+    }
+    for problema in &found.problems {
+        eprintln!("{}  aviso: {problema}", hora());
+    }
+
+    let mut entries = Vec::with_capacity(found.entries.len());
+    let mut nuevos: HashMap<String, PathBuf> = HashMap::new();
+    let mut actualizados = Vec::new();
+    for entry in found.entries {
+        let valido = if tocados.contains(&entry.path) {
+            match validate(registry, &entry.path).await {
+                Ok(()) => {
+                    actualizados.push(entry.name.clone());
+                    true
+                }
+                Err(err) => {
+                    eprintln!("{}  ✗ `{}` no es válido: {err}", hora(), entry.name);
+                    false
+                }
+            }
+        } else {
+            // Sin cambios: vale lo que valía.
+            paths.get(&entry.name) == Some(&entry.path)
+        };
+        if valido {
+            nuevos.insert(entry.name.clone(), entry.path.clone());
+            entries.push(entry);
+        }
+    }
+
+    let cambios = scheduler.replace(entries, Utc::now());
+    *paths = nuevos;
+    let disparador = |nombre: &str| {
+        scheduler
+            .entries()
+            .find(|e| e.name == nombre)
+            .map(|e| e.describe_trigger())
+            .unwrap_or_default()
+    };
+    for nombre in &cambios.added {
+        println!("{}  + `{nombre}`: {}", hora(), disparador(nombre));
+    }
+    for nombre in &cambios.changed {
+        println!("{}  ~ `{nombre}`: ahora {}", hora(), disparador(nombre));
+    }
+    for nombre in &cambios.removed {
+        println!("{}  - `{nombre}` ya no se vigila", hora());
+    }
+    for nombre in actualizados
+        .iter()
+        .filter(|n| !cambios.added.contains(n) && !cambios.changed.contains(n))
+    {
+        println!(
+            "{}  · `{nombre}` actualizado: la próxima ejecución usa la versión nueva",
+            hora()
+        );
+    }
+}
+
+fn nombre_de(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 async fn validate(registry: &Arc<Registry>, path: &Path) -> Result<()> {

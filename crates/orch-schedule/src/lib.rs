@@ -13,4 +13,4 @@ mod discover;
 mod scheduler;
 
 pub use discover::{discover, Broken, Discovery};
-pub use scheduler::{CronTrigger, Entry, Launch, Reason, Scheduler};
+pub use scheduler::{Changes, CronTrigger, Entry, Launch, Reason, Scheduler};

@@ -370,3 +370,116 @@ fn un_after_a_un_pipeline_inexistente_se_avisa() {
         found.problems
     );
 }
+
+// --- recargar la carpeta ------------------------------------------------------
+
+#[test]
+fn recargar_sin_cambios_conserva_el_proximo_disparo() {
+    let diario = || entry("diario", "schedule: { cron: \"0 2 * * *\" }");
+    let mut scheduler = Scheduler::new(vec![diario()], at("2026-03-15T01:00:00Z"));
+
+    // Se recarga a las 01:59: el disparo de las 02:00 sigue en pie, y no se
+    // recalcula desde ahora (lo que lo movería a mañana si fuera tarde).
+    let cambios = scheduler.replace(vec![diario()], at("2026-03-15T01:59:00Z"));
+    assert!(cambios.is_empty(), "{cambios:?}");
+    assert_eq!(
+        names(&scheduler.due(at("2026-03-15T02:00:00Z"))),
+        vec!["diario"]
+    );
+}
+
+#[test]
+fn un_cron_cambiado_se_recalcula_desde_ahora() {
+    let mut scheduler = Scheduler::new(
+        vec![entry("diario", "schedule: { cron: \"0 2 * * *\" }")],
+        at("2026-03-15T01:00:00Z"),
+    );
+    let cambios = scheduler.replace(
+        vec![entry("diario", "schedule: { cron: \"30 1 * * *\" }")],
+        at("2026-03-15T01:10:00Z"),
+    );
+    assert_eq!(cambios.changed, vec!["diario"]);
+    // Ahora toca a la 01:30, y ya no a las 02:00.
+    assert_eq!(
+        names(&scheduler.due(at("2026-03-15T01:30:00Z"))),
+        vec!["diario"]
+    );
+    scheduler.finished("diario", true);
+    assert!(scheduler.due(at("2026-03-15T02:00:00Z")).is_empty());
+}
+
+#[test]
+fn lo_nuevo_entra_y_lo_quitado_deja_de_disparar() {
+    let mut scheduler = Scheduler::new(
+        vec![entry("viejo", "schedule: { cron: \"0 2 * * *\" }")],
+        at("2026-03-15T01:00:00Z"),
+    );
+    let cambios = scheduler.replace(
+        vec![entry("nuevo", "schedule: { cron: \"0 2 * * *\" }")],
+        at("2026-03-15T01:30:00Z"),
+    );
+    assert_eq!(cambios.added, vec!["nuevo"]);
+    assert_eq!(cambios.removed, vec!["viejo"]);
+    assert_eq!(
+        names(&scheduler.due(at("2026-03-15T02:00:00Z"))),
+        vec!["nuevo"]
+    );
+}
+
+#[test]
+fn un_encadenamiento_nuevo_funciona_al_momento() {
+    let mut scheduler = Scheduler::new(
+        vec![entry("extraer", ""), entry("cargar", "")],
+        at("2026-03-15T00:00:00Z"),
+    );
+    scheduler.replace(
+        vec![
+            entry("extraer", ""),
+            entry("cargar", "schedule: { after: [extraer] }"),
+        ],
+        at("2026-03-15T00:01:00Z"),
+    );
+    scheduler.started("extraer");
+    assert_eq!(names(&scheduler.finished("extraer", true)), vec!["cargar"]);
+}
+
+#[test]
+fn lo_que_estaba_en_cola_se_va_si_se_quita_o_se_desactiva() {
+    let cada_minuto = |extra: &str| {
+        entry(
+            "lento",
+            &format!("schedule: {{ cron: \"* * * * *\", concurrency: queue{extra} }}"),
+        )
+    };
+    let mut scheduler = Scheduler::new(vec![cada_minuto("")], at("2026-03-15T00:00:30Z"));
+    // Arranca, y el siguiente disparo lo pilla corriendo: se encola.
+    assert_eq!(
+        names(&scheduler.due(at("2026-03-15T00:01:00Z"))),
+        vec!["lento"]
+    );
+    assert!(scheduler.due(at("2026-03-15T00:02:00Z")).is_empty());
+
+    // Se desactiva mientras espera: el turno en cola desaparece.
+    scheduler.replace(
+        vec![cada_minuto(", enabled: false")],
+        at("2026-03-15T00:02:10Z"),
+    );
+    scheduler.finished("lento", true);
+    assert!(scheduler.due(at("2026-03-15T00:02:20Z")).is_empty());
+}
+
+#[test]
+fn lo_que_corre_cuando_se_quita_termina_sin_romper_nada() {
+    let mut scheduler = Scheduler::new(
+        vec![entry("a", ""), entry("b", "schedule: { after: [a] }")],
+        at("2026-03-15T00:00:00Z"),
+    );
+    scheduler.started("a");
+    // `a` desaparece de la carpeta mientras corre.
+    scheduler.replace(
+        vec![entry("b", "schedule: { after: [a] }")],
+        at("2026-03-15T00:00:10Z"),
+    );
+    // Termina bien: su encadenado sigue en la carpeta, así que arranca.
+    assert_eq!(names(&scheduler.finished("a", true)), vec!["b"]);
+}

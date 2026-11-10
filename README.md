@@ -4,7 +4,7 @@ Plataforma local de orquestación y transporte de datos. La especificación
 completa está en [doc.md](doc.md); el desglose por fases, en
 [docs/PLAN.md](docs/PLAN.md).
 
-**Estado: Fases 0 a 4 completas.** Motor de DAG con ejecución en
+**Estado: Fases 0 a 5 completas.** Motor de DAG con ejecución en
 streaming, transformaciones SQL sobre DataFusion, conectores
 CSV/Parquet/PostgreSQL/REST, historial en DuckDB y demonio con disparadores
 cron, más la aplicación de escritorio (Tauri) con el lienzo del pipeline, que
@@ -388,6 +388,25 @@ dispararía de domingo a jueves en vez de lunes a viernes.
 nombres duplicados y `after` a pipelines que no existen, y con Ctrl-C deja de
 disparar pero espera a lo que esté en vuelo.
 
+Y vigila la carpeta: lo que se añade, se cambia o se borra se recoge en un
+par de segundos, sin reiniciar.
+
+```
+03:02:52  + `cada-minuto`: cron `* * * * *` (UTC)
+03:02:56  ✗ `roto.yaml` no se puede cargar: … line 4 column 1 …
+03:03:00  + `arreglado`: a mano
+03:03:00  ▶ cada-minuto (cron)
+03:03:04  - `temporal` ya no se vigila
+03:03:22  ~ `cada-minuto`: ahora cron `* * * * *` (UTC) · desactivado
+03:03:22  · `a-mano` actualizado: la próxima ejecución usa la versión nueva
+```
+
+Un pipeline que no cambia de disparador conserva su próximo disparo y su
+turno en cola; uno que se rompe a medio editar deja de dispararse con un
+aviso y vuelve en cuanto se arregla; y lo que esté corriendo termina con la
+versión con la que arrancó. Se compara el contenido, no la fecha del fichero:
+tocarlo sin cambiarlo no hace nada.
+
 Por defecto, si toca arrancar y la ejecución anterior sigue viva, el disparo
 se salta: un pipeline que tarda más que su intervalo no debe ir acumulando
 copias de sí mismo. Con `queue` se guarda uno —sólo uno, para que un atasco
@@ -763,9 +782,6 @@ tls: { ca: certs/ca.pem, cert: certs/b.pem, key: certs/b.key }
 Un certificado que no vale falla al momento, sin agotar `wait_for_server`:
 eso no se arregla esperando. Y un certificado que no está falla en
 `orch validate`.
-- **Para probar los dos extremos en una misma máquina**, cada `orch run`
-  con su propio `--store`: el historial no admite dos procesos a la vez
-  (ver limitaciones). En dos máquinas no hace falta pensarlo.
 - **Habla Flight estándar.** El origen lee de cualquier servidor que sirva un
   flujo con DoGet, y el sink sirve a cualquier cliente Flight. Está probado
   con el cliente de `arrow-flight` (Rust); con pyarrow no, porque no está
@@ -997,6 +1013,13 @@ cierra porque su nodo falló, el consumidor recibe un error, no un fin de flujo
 limpio — de lo contrario un sink escribiría un resultado truncado y lo daría
 por bueno. Esos nodos aparecen como `omitido` en el informe.
 
+**Un fichero de salida es todo o nada.** Los sinks CSV y Parquet escriben
+en un temporal junto al destino y lo renombran encima sólo si el pipeline
+termina bien; si falla a mitad, el destino se queda como estaba —con el
+resultado anterior, o sin fichero— y el temporal se borra. Quien escribe no
+decide: confirma el nodo, que es quien sabe si falló algo aguas arriba. El
+destino de PostgreSQL lo consigue con una transacción.
+
 **Cortar antes de tiempo es legítimo.** Un `limit` que alcanza su cuota cierra
 su entrada; el origen lo detecta y deja de producir en vez de fallar.
 
@@ -1080,7 +1103,11 @@ curvas de una tabla comparten el eje de tiempo, para que se vea qué nodo
 trabajaba cuándo.
 
 El historial vive en un fichero DuckDB (`orch.duckdb`, o `--store`), así que
-se puede consultar directamente. El progreso se guarda en `node_progress`, una
+se puede consultar directamente. Lo comparten sin pisarse la aplicación, el
+demonio y cualquier `orch run` u `orch runs`: cada proceso abre el fichero
+cuando lo usa y lo suelta en cuanto lleva 300 ms sin tocarlo (DuckDB sólo
+deja uno a la vez), y quien lo encuentra ocupado espera su turno. Para
+consultarlo con otra herramienta, mejor con Orch parado o en una copia. El progreso se guarda en `node_progress`, una
 muestra por segundo:
 
 ```sql
@@ -1110,10 +1137,6 @@ también hace usable el ciclo de desarrollo.
 
 ## Limitaciones conocidas
 
-- **Los sinks de fichero no son transaccionales.** Si el pipeline falla a
-  medias, el CSV de salida queda con las filas escritas hasta ese punto. El
-  destino de PostgreSQL sí lo es: carga dentro de una transacción y, si algo
-  falla, la tabla queda como estaba.
 - **`numeric` de PostgreSQL viaja como texto exacto.** Convertirlo a
   `Decimal128` obligaría a fijar una escala y redondear en silencio lo que no
   encajara, inaceptable en datos de dinero. Por encima de 28 dígitos
@@ -1136,11 +1159,6 @@ también hace usable el ciclo de desarrollo.
   se ven dentro de la ventana; para enterarse con ella cerrada, el webhook.
 - **El lineage se para en los orígenes.** Si un origen lee un fichero que
   escribe otro pipeline (o un sink del mismo), no se sigue hasta allí.
-- **El historial es de un solo proceso.** DuckDB no deja que dos procesos
-  escriban el mismo fichero: un segundo `orch run` con el mismo `--store`
-  mientras otro corre (o con la aplicación abierta sobre ese historial) no
-  arranca. El demonio no tiene el problema porque todo va en un proceso; para
-  varios `orch run` a la vez, `--store` distintos o `--no-store`.
 - **Un pipeline repartido sólo se lanza con `orch run --cluster`.** El
   demonio y la aplicación todavía no saben repartir; y una espera `after`
   entre nodos de máquinas distintas no se admite.

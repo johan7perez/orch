@@ -211,8 +211,7 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
 - ✅ El planificador es puro: se le pregunta qué toca a una hora dada y
   responde. Todas sus reglas se prueban con fechas escritas a mano, sin
   esperas reales.
-- ⬜ Reload en caliente: hoy el demonio lee el directorio al arrancar y hay
-  que reiniciarlo para recoger un pipeline nuevo.
+- ✅ Reload en caliente (Fase 5.3).
 
 ---
 
@@ -652,6 +651,59 @@ el candidato natural). Medir antes de decidir, por pasos:
   mutuo, cliente sin certificado, cliente y servidor de otra CA, `https` sin
   CA propia.
 
+## Fase 5 — Solidez ✅
+
+Lo que tropezaría a cualquiera que use Orch a diario, antes que funciones
+nuevas.
+
+### 5.1 Un historial para todos los procesos ✅
+
+- ✅ DuckDB sólo deja un proceso con el fichero abierto, y cada proceso lo
+  retenía toda su vida: con la aplicación abierta no arrancaba un `orch run`
+  sobre el mismo historial. Ahora se abre al usarlo y se suelta tras 300 ms
+  ocioso; quien lo encuentra cogido reintenta hasta 15 s.
+- ✅ Medido antes de decidir: abrir, escribir un lote y cerrar cuesta unos
+  89 ms en debug, frente a 8,5 ms con la conexión abierta (casi todo, el
+  checkpoint al cerrar). Por eso no se abre en cada operación: una ráfaga
+  reutiliza la conexión, y el escritor de eventos vuelca cada segundo en vez
+  de cada 200 ms, dejando hueco entre volcados. Lo que se ve en vivo no
+  cambia: llega por el canal de eventos.
+- ✅ Tests con dos procesos de verdad (el test se relanza a sí mismo): dos
+  escribiendo a la vez con la cadencia del escritor, y un proceso ocioso que
+  no retiene el fichero. Probado también con dos `orch run` simultáneos.
+
+### 5.2 Sinks de fichero atómicos ✅
+
+- ✅ CSV y Parquet escriben en un temporal junto al destino (misma carpeta,
+  así que renombrar es atómico) y lo ponen en su sitio sólo si todo fue bien,
+  con el contenido en disco antes del renombrado. Si el pipeline falla a
+  mitad, el destino se queda como estaba —el resultado anterior, o ninguno—
+  y no quedan temporales.
+- ✅ Quien confirma es el nodo, no el escritor: con un fallo aguas arriba, el
+  escritor termina limpio con lo que le llegó, y eso no es un resultado. Era
+  justo el caso que dejaba un CSV cortado con cara de bueno.
+- ✅ Tests con un origen que falla a mitad (con y sin resultado anterior, CSV
+  y Parquet) y con uno que termina bien sustituyendo al anterior.
+
+### 5.3 El demonio ve los cambios de su carpeta ✅
+
+- ✅ Cada dos segundos compara el contenido de cada pipeline de su carpeta
+  (la huella del texto, no la fecha: tocar sin cambiar no cuenta) y, si algo
+  cambió, la relee y valida sólo lo que cambió. Por sondeo y no por avisos
+  del sistema: no depende de que la carpeta los dé (una de red, por ejemplo).
+- ✅ El planificador recibe los pipelines nuevos con `replace`, puro como el
+  resto: lo que no cambió de disparador conserva su próximo disparo y su
+  turno en cola; lo que cambió se recalcula desde ahora; lo que desaparece
+  deja de dispararse, y lo que corría termina con su versión. Un pipeline
+  que se rompe a medio editar deja de dispararse con un aviso y vuelve al
+  arreglarse.
+- ✅ El demonio ya no se niega a arrancar con la carpeta vacía o sin nada
+  válido: con recarga, esperar a que aparezca algo tiene sentido.
+- ✅ Tests del planificador con fechas escritas a mano (sin cambios, cron
+  cambiado, nuevo y quitado, encadenamiento nuevo, cola de uno desactivado,
+  quitar uno que corre) y probado con el demonio de verdad: añadir, romper,
+  arreglar, borrar, desactivar, cambiar contenido y tocar sin cambiar.
+
 ---
 
 ## Deuda técnica anotada
@@ -659,18 +711,12 @@ el candidato natural). Medir antes de decidir, por pasos:
 Cada punto está documentado en el código donde aplica y, si se nota al usar
 Orch, listado en las limitaciones del README:
 
-- Los sinks de fichero no son transaccionales (un fallo a media escritura
-  deja salida parcial). El de PostgreSQL sí lo es.
 - Fan-in por concatenación, no intercalado.
 - Las ramas independientes no se cancelan cuando otra falla.
 - Un nodo `sql` con varias entradas necesita que todas declaren esquema.
-- El demonio no recarga el directorio en caliente.
 - El lienzo no tiene deshacer: cada cambio se escribe al momento.
 - La vista general del lienzo con cientos de nodos a la vista es lenta: es el
   límite de pintarla con elementos del DOM.
-- Dos procesos no pueden usar el mismo historial a la vez (DuckDB admite un
-  solo proceso escribiendo): un segundo `orch run` sobre el mismo `--store`
-  no arranca. Salió al probar las aristas remotas en una sola máquina.
 - `serde_yaml` está sin mantenimiento; migrar cuando haya un sucesor claro.
   El editor del lienzo ya no depende de él para escribir (usa `yaml-edit`),
   sólo para leer.

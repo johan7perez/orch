@@ -16,7 +16,7 @@ use orch_core::{
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use crate::util::{comma, delimiter_byte, yes};
+use crate::util::{comma, delimiter_byte, yes, FicheroAtomico};
 
 pub fn register(registry: &mut Registry) {
     registry.register_source("csv", |node, config: CsvSourceConfig| {
@@ -258,19 +258,26 @@ impl Sink for CsvSink {
         }
         drop(tx);
 
-        let write_result = writer.await?;
-        match upstream_error {
-            Some(err) => Err(err),
-            None => write_result,
+        // Sólo se pone en su sitio si todo fue bien: con un fallo aguas
+        // arriba, el escritor habrá terminado limpio con lo que le llegó, y
+        // eso no es un resultado.
+        let escrito = writer.await?;
+        match (upstream_error, escrito) {
+            (Some(err), _) | (None, Err(err)) => Err(err),
+            (None, Ok(fichero)) => {
+                let node = self.node.clone();
+                tokio::task::spawn_blocking(move || fichero.confirmar(&node)).await?
+            }
         }
     }
 }
 
+/// Escribe en un temporal y lo devuelve sin confirmar.
 fn write_blocking(
     node: &str,
     config: &CsvSinkConfig,
     mut rx: mpsc::Receiver<RecordBatch>,
-) -> Result<()> {
+) -> Result<FicheroAtomico> {
     if config.create_dirs {
         if let Some(parent) = config.path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -284,12 +291,7 @@ fn write_blocking(
         }
     }
 
-    let file = File::create(&config.path).map_err(|e| {
-        OrchError::node(
-            node,
-            format!("no se pudo crear `{}`: {e}", config.path.display()),
-        )
-    })?;
+    let (fichero, file) = FicheroAtomico::crear(node, &config.path)?;
 
     let mut writer = WriterBuilder::new()
         .with_header(config.has_header)
@@ -303,7 +305,8 @@ fn write_blocking(
     }
 
     // El escritor de `arrow-csv` vuelca su buffer al soltarse; el `File` que
-    // hay debajo no tiene buffer propio, así que aquí el fichero queda completo.
+    // hay debajo no tiene buffer propio, así que aquí el temporal queda
+    // completo.
     drop(writer);
-    Ok(())
+    Ok(fichero)
 }

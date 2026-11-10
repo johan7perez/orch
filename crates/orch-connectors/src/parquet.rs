@@ -27,7 +27,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::util::yes;
+use crate::util::{yes, FicheroAtomico};
 
 pub fn register(registry: &mut Registry) {
     registry.register_source("parquet", |node, config| {
@@ -371,20 +371,25 @@ impl Sink for ParquetSink {
         }
         drop(tx);
 
-        let write_result = writer.await?;
-        match upstream_error {
-            Some(err) => Err(err),
-            None => write_result,
+        // Como en el CSV: sólo se pone en su sitio si todo fue bien.
+        let escrito = writer.await?;
+        match (upstream_error, escrito) {
+            (Some(err), _) | (None, Err(err)) => Err(err),
+            (None, Ok(fichero)) => {
+                let node = self.node.clone();
+                tokio::task::spawn_blocking(move || fichero.confirmar(&node)).await?
+            }
         }
     }
 }
 
+/// Escribe en un temporal y lo devuelve sin confirmar.
 fn write_blocking(
     node: &str,
     config: &ParquetSinkConfig,
     known_schema: Option<SchemaRef>,
     mut rx: mpsc::Receiver<RecordBatch>,
-) -> Result<()> {
+) -> Result<FicheroAtomico> {
     let mut properties =
         WriterProperties::builder().set_compression(compression_from(node, &config.compression)?);
     if let Some(size) = config.row_group_size {
@@ -392,11 +397,11 @@ fn write_blocking(
     }
     let properties = properties.build();
 
-    let mut writer: Option<ArrowWriter<File>> = None;
+    let mut writer: Option<(ArrowWriter<File>, FicheroAtomico)> = None;
 
     // El fichero no se crea hasta conocer el esquema: un Parquet sin pie no
     // se puede leer, y dejar uno a medias sería peor que no dejar nada.
-    let open_writer = |schema: SchemaRef| -> Result<ArrowWriter<File>> {
+    let open_writer = |schema: SchemaRef| -> Result<(ArrowWriter<File>, FicheroAtomico)> {
         if config.create_dirs {
             if let Some(parent) = config.path.parent() {
                 if !parent.as_os_str().is_empty() {
@@ -409,15 +414,12 @@ fn write_blocking(
                 }
             }
         }
-        let file = File::create(&config.path).map_err(|e| {
-            OrchError::node(
-                node,
-                format!("no se pudo crear `{}`: {e}", config.path.display()),
-            )
-        })?;
-        ArrowWriter::try_new(file, schema, Some(properties.clone())).map_err(|e| {
-            OrchError::node(node, format!("no se pudo abrir el escritor Parquet: {e}"))
-        })
+        let (fichero, file) = FicheroAtomico::crear(node, &config.path)?;
+        let escritor =
+            ArrowWriter::try_new(file, schema, Some(properties.clone())).map_err(|e| {
+                OrchError::node(node, format!("no se pudo abrir el escritor Parquet: {e}"))
+            })?;
+        Ok((escritor, fichero))
     };
 
     if let Some(schema) = known_schema.clone() {
@@ -431,15 +433,16 @@ fn write_blocking(
         writer
             .as_mut()
             .expect("abierto justo arriba")
+            .0
             .write(&batch)
             .map_err(|e| OrchError::node(node, format!("no se pudo escribir el Parquet: {e}")))?;
     }
 
     match writer {
         // `close` escribe el pie con los metadatos; sin él no hay fichero.
-        Some(writer) => writer
+        Some((writer, fichero)) => writer
             .close()
-            .map(|_| ())
+            .map(|_| fichero)
             .map_err(|e| OrchError::node(node, format!("no se pudo cerrar el Parquet: {e}"))),
         None => Err(OrchError::node(
             node,

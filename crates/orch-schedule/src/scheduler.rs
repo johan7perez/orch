@@ -147,6 +147,64 @@ impl Scheduler {
         }
     }
 
+    /// Cambia los pipelines que se vigilan: lo que hay en la carpeta ahora.
+    ///
+    /// Un pipeline cuyo disparador no cambió conserva su estado —su próximo
+    /// disparo, su turno en cola—; uno que cambió se recalcula desde `now`, y
+    /// uno que desaparece deja de dispararse. Lo que esté corriendo sigue
+    /// hasta terminar: este cambio es sobre lo que arranca a partir de ahora.
+    pub fn replace(&mut self, entries: Vec<Entry>, now: DateTime<Utc>) -> Changes {
+        let mut previos: HashMap<String, State> = std::mem::take(&mut self.states)
+            .into_iter()
+            .map(|s| (s.entry.name.clone(), s))
+            .collect();
+        let mut cambios = Changes::default();
+
+        for entry in entries {
+            let state = match previos.remove(&entry.name) {
+                Some(previo) if mismo_disparador(&previo.entry, &entry) => {
+                    State { entry, ..previo }
+                }
+                Some(previo) => {
+                    cambios.changed.push(entry.name.clone());
+                    State {
+                        next_fire: next_after(&entry, now),
+                        // Un turno en cola se respeta mientras siga activo.
+                        queued: previo.queued && entry.enabled,
+                        entry,
+                    }
+                }
+                None => {
+                    cambios.added.push(entry.name.clone());
+                    State {
+                        next_fire: next_after(&entry, now),
+                        queued: false,
+                        entry,
+                    }
+                }
+            };
+            self.states.push(state);
+        }
+
+        cambios.removed = previos.into_keys().collect();
+        cambios.removed.sort();
+        self.index = self
+            .states
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.entry.name.clone(), i))
+            .collect();
+        // Lo que esperaba turno y ya no está (o ya no puede arrancar), fuera.
+        let vivos: HashSet<&str> = self
+            .states
+            .iter()
+            .filter(|s| s.queued)
+            .map(|s| s.entry.name.as_str())
+            .collect();
+        self.pending.retain(|name| vivos.contains(name.as_str()));
+        cambios
+    }
+
     pub fn entries(&self) -> impl Iterator<Item = &Entry> {
         self.states.iter().map(|state| &state.entry)
     }
@@ -278,6 +336,32 @@ impl Scheduler {
         }
         false
     }
+}
+
+/// Lo que cambió al reemplazar los pipelines vigilados.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Changes {
+    pub added: Vec<String>,
+    /// Cambió cuándo arranca: su cron, su zona, de quién depende, si está
+    /// activo o qué hace si le toca mientras corre.
+    pub changed: Vec<String>,
+    pub removed: Vec<String>,
+}
+
+impl Changes {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.changed.is_empty() && self.removed.is_empty()
+    }
+}
+
+/// Si dos versiones de un pipeline arrancan exactamente igual.
+fn mismo_disparador(a: &Entry, b: &Entry) -> bool {
+    a.cron.as_ref().map(|c| (&c.expression, c.timezone))
+        == b.cron.as_ref().map(|c| (&c.expression, c.timezone))
+        && a.after == b.after
+        && a.concurrency == b.concurrency
+        && a.enabled == b.enabled
+        && a.path == b.path
 }
 
 /// Siguiente disparo por cron después de `now`, en la zona configurada.
