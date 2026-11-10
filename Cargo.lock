@@ -5284,6 +5284,8 @@ name = "orch-app"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "dirs",
+ "notify-rust",
  "orch-alert",
  "orch-connectors",
  "orch-core",
@@ -5302,6 +5304,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -5382,6 +5385,7 @@ version = "0.0.1"
 dependencies = [
  "arrow-flight",
  "async-trait",
+ "aws-lc-rs",
  "futures",
  "orch-connectors",
  "orch-core",
@@ -5471,6 +5475,7 @@ version = "0.0.1"
 dependencies = [
  "arrow 59.3.0",
  "async-trait",
+ "aws-lc-rs",
  "orch-connectors",
  "orch-core",
  "reqwest 0.13.5",
@@ -5518,6 +5523,7 @@ name = "orch-store"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "dirs",
  "duckdb",
  "orch-core",
  "orch-version",

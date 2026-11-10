@@ -132,14 +132,18 @@ fn coordinador(directory: &Path, avisos: &mut Vec<String>) -> Option<Arc<Coordin
     }
 }
 
-/// Dónde buscar pipelines la primera vez.
+/// Qué carpeta de pipelines abrir al arrancar.
 ///
-/// Se prueba `ORCH_PIPELINES`, luego `./pipelines` y luego los ejemplos del
-/// repositorio, para que la aplicación arranque enseñando algo en vez de una
-/// pantalla vacía.
-pub fn default_directory() -> PathBuf {
-    if let Ok(from_env) = std::env::var("ORCH_PIPELINES") {
+/// `ORCH_PIPELINES` si está; si no, la que se abrió la última vez; si no,
+/// `./pipelines` o los ejemplos del repositorio (al compilarla desde él); y
+/// si no, los ejemplos que trae el instalador (`ejemplos`, sus recursos).
+/// Siempre algo que enseñar en vez de una pantalla vacía.
+pub fn default_directory(ejemplos: Option<&Path>) -> PathBuf {
+    if let Some(from_env) = std::env::var_os("ORCH_PIPELINES") {
         return PathBuf::from(from_env);
+    }
+    if let Some(recordada) = crate::preferencias::carpeta_recordada() {
+        return recordada;
     }
     for candidate in ["pipelines", "examples/pipelines"] {
         let path = PathBuf::from(candidate);
@@ -147,12 +151,15 @@ pub fn default_directory() -> PathBuf {
             return path;
         }
     }
-    PathBuf::from("pipelines")
+    ejemplos
+        .and_then(crate::preferencias::ejemplos)
+        .unwrap_or_else(|| PathBuf::from("pipelines"))
 }
 
-/// Dónde vive el historial.
+/// Dónde vive el historial: `ORCH_STORE`, o el mismo que usa la CLI por
+/// defecto.
 pub fn default_store() -> PathBuf {
-    std::env::var("ORCH_STORE")
+    std::env::var_os("ORCH_STORE")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("orch.duckdb"))
+        .unwrap_or_else(orch_store::ruta_por_defecto)
 }

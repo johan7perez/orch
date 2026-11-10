@@ -10,10 +10,12 @@
 mod avisos;
 mod commands;
 mod events;
+mod preferencias;
 mod state;
 
 use orch_store::Store;
 use state::{default_directory, default_store, AppState};
+use tauri::Manager;
 
 fn main() {
     tracing_subscriber::fmt()
@@ -35,7 +37,13 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .manage(AppState::new(store, default_directory()))
+        .setup(move |app| {
+            // Los ejemplos van entre los recursos del instalador, y dónde
+            // quedan sólo se sabe con la aplicación ya creada.
+            let ejemplos = app.path().resource_dir().ok().map(|r| r.join("ejemplos"));
+            app.manage(AppState::new(store, default_directory(ejemplos.as_deref())));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::workspace,
             commands::set_directory,

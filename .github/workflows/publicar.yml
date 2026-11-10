@@ -1,0 +1,157 @@
+# Una etiqueta `v<versión>` construye los instaladores de la aplicación y la
+# CLI de cada sistema y los deja en un borrador de release, con las notas de
+# esa versión en el CHANGELOG.md. Se publica a mano, después de mirarlo.
+# El proceso entero está en docs/PUBLICAR.md.
+name: Publicar
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  borrador:
+    name: Borrador del release
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: La etiqueta es la versión del Cargo.toml
+        id: version
+        run: |
+          # La de `[workspace.package]`, la única que hay.
+          version=$(awk -F'"' '
+            /^\[workspace\.package\]/ { dentro = 1; next }
+            /^\[/ { dentro = 0 }
+            dentro && /^version *=/ { print $2; exit }
+          ' Cargo.toml)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::la etiqueta $GITHUB_REF_NAME no es la versión del Cargo.toml (v$version)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Notas del CHANGELOG
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            /^## / { dentro = ($2 == v); next }
+            dentro { print }
+          ' CHANGELOG.md > notas.md
+          if ! grep -q '[^[:space:]]' notas.md; then
+            echo "::error::el CHANGELOG.md no tiene una sección «## $VERSION»"
+            exit 1
+          fi
+
+      - name: Crear el borrador
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Al relanzar el workflow ya existe: se reutiliza.
+          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+              --title "Orch $VERSION" --notes-file notas.md
+
+  paquetes:
+    name: ${{ matrix.nombre }}
+    needs: borrador
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # La más antigua que se pueda: el paquete funciona en esa glibc y
+          # en las posteriores, no al revés.
+          - nombre: Linux x86-64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - nombre: Windows x86-64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - nombre: macOS Apple Silicon
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - nombre: macOS Intel
+            os: macos-latest
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.borrador.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bibliotecas del sistema
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libwebkit2gtk-4.1-dev \
+            libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev \
+            librsvg2-dev libssl-dev libxdo-dev libdbus-1-dev patchelf
+
+      - name: Hacer sitio en el disco
+        if: runner.os == 'Linux'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup target add "$TARGET"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Interfaz
+        run: npm ci --prefix ui
+
+      # Construye también la interfaz (`beforeBuildCommand`).
+      - name: Aplicación
+        run: npx --prefix ui tauri build --ci --target "$TARGET"
+
+      - name: CLI
+        run: cargo build --release --locked --target "$TARGET" -p orch-cli
+
+      - name: Subir al borrador
+        run: |
+          cli="orch-$VERSION-$TARGET"
+          mkdir "$cli"
+          cp LICENSE "$cli/"
+          case "$TARGET" in
+            *windows*)
+              cp "target/$TARGET/release/orch.exe" "$cli/"
+              7z a "$cli.zip" "$cli" > /dev/null
+              comprimido="$cli.zip"
+              ;;
+            *)
+              cp "target/$TARGET/release/orch" "$cli/"
+              tar czf "$cli.tar.gz" "$cli"
+              comprimido="$cli.tar.gz"
+              ;;
+          esac
+
+          bundle="target/$TARGET/release/bundle"
+          shopt -s nullglob
+          gh release upload "$GITHUB_REF_NAME" --clobber "$comprimido" \
+            "$bundle"/deb/*.deb "$bundle"/rpm/*.rpm "$bundle"/appimage/*.AppImage \
+            "$bundle"/nsis/*.exe "$bundle"/msi/*.msi "$bundle"/dmg/*.dmg

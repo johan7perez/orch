@@ -24,8 +24,15 @@ struct Cli {
     #[arg(long, global = true, default_value = "warn")]
     log: String,
 
-    /// Fichero DuckDB donde se guarda el historial de ejecuciones.
-    #[arg(long, global = true, env = "ORCH_STORE", default_value = "orch.duckdb")]
+    /// Fichero DuckDB donde se guarda el historial de ejecuciones. Por
+    /// defecto, el de la carpeta de datos del usuario, que es el mismo que
+    /// usa la aplicación.
+    #[arg(
+        long,
+        global = true,
+        env = "ORCH_STORE",
+        default_value_os_t = orch_store::ruta_por_defecto()
+    )]
     store: PathBuf,
 
     /// Carpeta de plugins WASM. Por defecto, la subcarpeta `plugins/` de la

@@ -19,6 +19,10 @@ schemars.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+# Que compile en Windows sin NASM (ver el Cargo.toml del workspace).
+[target.'cfg(windows)'.dependencies]
+aws-lc-rs.workspace = true
+
 [dev-dependencies]
 orch-connectors.workspace = true
 tempfile.workspace = true

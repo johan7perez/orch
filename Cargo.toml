@@ -26,22 +26,22 @@ version = "0.0.1"
 edition = "2021"
 rust-version = "1.97"
 license = "MIT"
-repository = "https://github.com/johanperez/orch"
+repository = "https://github.com/johan7perez/orch"
 
 [workspace.dependencies]
-orch-core = { path = "crates/orch-core", version = "0.0.1" }
-orch-connectors = { path = "crates/orch-connectors", version = "0.0.1" }
-orch-sql = { path = "crates/orch-sql", version = "0.0.1" }
-orch-rest = { path = "crates/orch-rest", version = "0.0.1" }
-orch-postgres = { path = "crates/orch-postgres", version = "0.0.1" }
-orch-store = { path = "crates/orch-store", version = "0.0.1" }
-orch-schedule = { path = "crates/orch-schedule", version = "0.0.1" }
-orch-edit = { path = "crates/orch-edit", version = "0.0.1" }
-orch-version = { path = "crates/orch-version", version = "0.0.1" }
-orch-flight = { path = "crates/orch-flight", version = "0.0.1" }
-orch-alert = { path = "crates/orch-alert", version = "0.0.1" }
-orch-wasm = { path = "crates/orch-wasm", version = "0.0.1" }
-orch-plugin = { path = "crates/orch-plugin", version = "0.0.1" }
+orch-core = { path = "crates/orch-core" }
+orch-connectors = { path = "crates/orch-connectors" }
+orch-sql = { path = "crates/orch-sql" }
+orch-rest = { path = "crates/orch-rest" }
+orch-postgres = { path = "crates/orch-postgres" }
+orch-store = { path = "crates/orch-store" }
+orch-schedule = { path = "crates/orch-schedule" }
+orch-edit = { path = "crates/orch-edit" }
+orch-version = { path = "crates/orch-version" }
+orch-flight = { path = "crates/orch-flight" }
+orch-alert = { path = "crates/orch-alert" }
+orch-wasm = { path = "crates/orch-wasm" }
+orch-plugin = { path = "crates/orch-plugin" }
 
 arrow = "59"
 # Lo justo de Arrow para un plugin compilado a WASM: sin CSV ni JSON, que
@@ -65,6 +65,10 @@ tonic = { version = "0.14", default-features = false, features = [
     "tls-aws-lc",
     "tls-native-roots",
 ] }
+# No se usa directamente: aws-lc es la criptografía de reqwest y de tonic, y
+# en Windows x86-64 pide NASM para compilar. Con `prebuilt-nasm` usa los
+# objetos ya ensamblados que trae el crate y no hay que instalar nada.
+aws-lc-rs = { version = "1", default-features = false, features = ["prebuilt-nasm"] }
 # Sólo para tests: certificados de usar y tirar.
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 # TLS por defecto = schannel en Windows: sin dependencias externas que compilar.
@@ -108,6 +112,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
+# Dónde guardar el historial y las preferencias de cada usuario, en cada sistema.
+dirs = "7"
 
 tempfile = "3"
 
@@ -132,9 +138,13 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 panic = "abort"
+# Sin la tabla de símbolos: la CLI pasa de 173 a 142 MB. Un panic sigue
+# diciendo dónde fue; para una traza con nombres, `bench-fast`.
+strip = "symbols"
 
 # Perfil para medir throughput real sin perder el stack trace de un panic.
 [profile.bench-fast]
 inherits = "release"
 debug = 1
 panic = "unwind"
+strip = "none"

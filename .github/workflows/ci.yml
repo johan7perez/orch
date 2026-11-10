@@ -1,0 +1,97 @@
+# Formato, clippy y tests en Linux, Windows y macOS, en cada push a main y en
+# cada pull request. Es lo que se hace a mano antes de un commit
+# (README, «Compilar y probar»), en los tres sistemas a la vez.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Un push nuevo a la misma rama cancela la comprobación del anterior.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Con poca memoria, varios rustc a la vez sobre DataFusion se quedan sin
+  # ella (README, «Compilar y probar»): algunos runners tienen 7 GB.
+  CARGO_BUILD_JOBS: 2
+  # Sin información de depuración ni compilación incremental: cada ejecutable
+  # de test enlaza DuckDB y DataFusion, y con depuración pasan de cientos de
+  # MB y no caben en el disco del runner.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  formato:
+    name: Formato
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - run: cargo fmt --all --check
+
+  comprobar:
+    name: ${{ matrix.nombre }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - nombre: Linux
+            os: ubuntu-24.04
+          - nombre: Windows
+            os: windows-latest
+          - nombre: macOS
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bibliotecas del sistema
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libwebkit2gtk-4.1-dev \
+            libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev \
+            librsvg2-dev libssl-dev libxdo-dev libdbus-1-dev
+
+      - name: Hacer sitio en el disco
+        if: runner.os == 'Linux'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup target add wasm32-wasip2
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # La aplicación incrusta `ui/dist` al compilar: tiene que existir antes.
+      - name: Interfaz
+        run: |
+          npm ci --prefix ui
+          npm run build --prefix ui
+
+      # Los tests de plugins se saltan si no están compilados, y compilarlos
+      # desde un test bloquearía el `target` que usa `cargo test`.
+      - name: Plugins de ejemplo
+        run: cargo build --release --target wasm32-wasip2 -p orch-plugin-identidad -p orch-plugin-mayusculas -p orch-plugin-fisgon
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace

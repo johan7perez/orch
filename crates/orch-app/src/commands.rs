@@ -156,7 +156,9 @@ fn inspect(state: &AppState, path: &std::path::Path) -> (usize, Option<String>, 
 /// Cambia el directorio que se está mirando.
 #[tauri::command]
 pub async fn set_directory(state: State<'_, AppState>, path: String) -> Response<Workspace> {
-    state.set_directory(&PathBuf::from(path));
+    let path = PathBuf::from(path);
+    state.set_directory(&path);
+    crate::preferencias::recordar_carpeta(&path);
     workspace(state).await
 }
 

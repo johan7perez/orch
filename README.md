@@ -4,7 +4,7 @@ Plataforma local de orquestación y transporte de datos. La especificación
 completa está en [doc.md](doc.md); el desglose por fases, en
 [docs/PLAN.md](docs/PLAN.md).
 
-**Estado: Fases 0 a 6 completas.** Motor de DAG con ejecución en
+**Estado: Fases 0 a 6 completas; la 7 (instaladores y publicación), a falta de que la CI corra en GitHub.** Motor de DAG con ejecución en
 streaming, transformaciones SQL sobre DataFusion, conectores
 CSV/Parquet/PostgreSQL/REST, historial en DuckDB y demonio con disparadores
 cron, más la aplicación de escritorio (Tauri) con el lienzo del pipeline, que
@@ -18,6 +18,30 @@ commit de git; y un pipeline puede repartirse entre varias máquinas, con
 aristas remotas sobre Arrow Flight y TLS mutuo.
 
 ---
+
+## Instalar
+
+En [*Releases*](https://github.com/johan7perez/orch/releases), cada versión
+trae la aplicación de escritorio para Linux (`.deb`, `.rpm`, AppImage),
+Windows (instalador o `.msi`) y macOS (`.dmg`, Apple Silicon e Intel), y la
+CLI suelta (`orch`, en un `.tar.gz` o `.zip` por sistema), que es lo que va
+en un servidor con el demonio o en un worker del clúster. Los instaladores
+no están firmados todavía: en macOS se abre la primera vez con clic derecho →
+*Abrir*, y en Windows SmartScreen pide confirmarlo.
+
+Dónde guarda sus cosas:
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| Historial de ejecuciones | `~/.local/share/orch/orch.duckdb` | `~/Library/Application Support/orch/orch.duckdb` | `%LOCALAPPDATA%\orch\orch.duckdb` |
+| Ejemplos que abre la aplicación la primera vez | `~/.local/share/orch/ejemplos` | `~/Library/Application Support/orch/ejemplos` | `%LOCALAPPDATA%\orch\ejemplos` |
+| La última carpeta que abrió la aplicación | `~/.config/orch/aplicacion.json` | `~/Library/Application Support/orch/aplicacion.json` | `%APPDATA%\orch\aplicacion.json` |
+
+El historial es el mismo para la CLI, el demonio y la aplicación, así que la
+ventana enseña también lo que corrió desde la terminal; `--store` u
+`ORCH_STORE` lo cambian. Cómo se publica una versión, en
+[docs/PUBLICAR.md](docs/PUBLICAR.md); qué trae cada una, en
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Requisitos
 
@@ -88,6 +112,22 @@ cargo fmt --all
 > dan `E0786`/`E0460`. Si ya ha pasado, hay que limpiar los crates afectados
 > (`cargo clean -p <crate>`) y recompilar. La primera build completa tarda:
 > DuckDB se compila desde fuente.
+
+Lo mismo, en Linux, Windows y macOS, lo hace la CI en cada push
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+
+Los instaladores de la aplicación para el sistema en el que se está, en
+`target/release/bundle/`, y la CLI en release:
+
+```sh
+npx --prefix ui tauri build
+cargo build --release -p orch-cli
+```
+
+En Linux salen `.deb`, `.rpm` y AppImage; para la AppImage, Tauri descarga
+sus herramientas la primera vez. En Windows no hace falta NASM aunque lo
+pida la criptografía de rustls (aws-lc): el workspace activa sus objetos ya
+ensamblados.
 
 Los tests de PostgreSQL y el del llavero **se saltan solos** si no hay
 servidor (`ORCH_TEST_PG_DSN`) o almacén de credenciales, y entonces cuentan
@@ -213,15 +253,18 @@ sistema sin interruptor propio, y movimiento sólo donde comunica algo —el
 latido de un nodo en curso, la entrada de un evento nuevo—, respetando
 `prefers-reduced-motion`.
 
+Al arrancar abre `ORCH_PIPELINES` si está; si no, la última carpeta que
+se eligió desde el pie del lateral, que se recuerda entre arranques. La
+primera vez, sin ninguna de las dos, abre unos ejemplos que trae el
+instalador, copiados a la carpeta de datos del usuario (ver
+[Instalar](#instalar)). El historial es el mismo que el de la CLI, así que la
+ventana ve también sus ejecuciones.
+
 Con `tauri dev` el proceso arranca en `crates/orch-app`, así que no encuentra
-solo `examples/pipelines`. La carpeta se le indica con `ORCH_PIPELINES` (ruta
-absoluta), o se elige desde el pie del lateral. `ORCH_STORE` apunta al
-historial; si es el mismo `orch.duckdb` que usa la CLI, la aplicación ve
-también sus ejecuciones:
+solo `examples/pipelines`; se le indica así:
 
 ```bash
-ORCH_PIPELINES=$PWD/examples/pipelines ORCH_STORE=$PWD/orch.duckdb \
-  npx --prefix ui tauri dev
+ORCH_PIPELINES=$PWD/examples/pipelines npx --prefix ui tauri dev
 ```
 
 La marca vive en `ui/src/assets/marca`. El logo de la interfaz
@@ -1015,6 +1058,7 @@ crates/
 ui/                  frontend de la aplicación (React + Vite)
 plugins/             plugins de ejemplo
 wit/                 el contrato entre Orch y sus plugins
+.github/workflows/   CI en los tres sistemas y publicación de versiones
 ```
 
 El core no conoce ninguna implementación concreta: recibe un `Registry` con lo
@@ -1130,7 +1174,8 @@ la curva entera, con el valor de cada instante al pasar el puntero. Todas las
 curvas de una tabla comparten el eje de tiempo, para que se vea qué nodo
 trabajaba cuándo.
 
-El historial vive en un fichero DuckDB (`orch.duckdb`, o `--store`), así que
+El historial vive en un fichero DuckDB (en la carpeta de datos del usuario,
+ver [Instalar](#instalar), o donde diga `--store`), así que
 se puede consultar directamente. Lo comparten sin pisarse la aplicación, el
 demonio y cualquier `orch run` u `orch runs`: cada proceso abre el fichero
 cuando lo usa y lo suelta en cuanto lleva 300 ms sin tocarlo (DuckDB sólo

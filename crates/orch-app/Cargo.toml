@@ -29,6 +29,7 @@ orch-wasm.workspace = true
 orch-alert.workspace = true
 
 chrono.workspace = true
+dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
@@ -37,3 +38,11 @@ tauri-plugin-notification.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+# La notificación en Linux, con el nombre de la aplicación (ver `avisos`). La
+# misma versión que ya trae el plugin de notificaciones.
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4.18"
+
+[dev-dependencies]
+tempfile.workspace = true

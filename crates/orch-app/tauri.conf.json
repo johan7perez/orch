@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Orch",
-  "version": "0.0.1",
   "identifier": "do.alpha.orch",
   "build": {
     "frontendDist": "../../ui/dist",
@@ -29,6 +28,13 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Johan Perez",
+    "copyright": "Copyright (c) 2026 Johan Perez",
+    "category": "DeveloperTool",
+    "shortDescription": "Orquestación y transporte de datos",
+    "longDescription": "Pipelines de datos como YAML o en un lienzo: orígenes, transformaciones SQL y destinos, ejecutados en streaming sobre Arrow, con historial, alertas, lineage por columna y versiones en git.",
+    "homepage": "https://github.com/johan7perez/orch",
+    "licenseFile": "../../LICENSE",
     "icon": [
       "icons/128x128@2x.png",
       "icons/32x32.png",
@@ -36,6 +42,37 @@
       "icons/icon.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../../examples/pipelines/*.yaml": "ejemplos/pipelines/",
+      "../../examples/data/*.csv": "ejemplos/data/"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libssl3"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "libssl.so.3()(64bit)"
+        ]
+      }
+    },
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "11.0"
+    },
+    "windows": {
+      "nsis": {
+        "languages": [
+          "Spanish",
+          "English"
+        ]
+      },
+      "wix": {
+        "language": "es-ES"
+      }
+    }
   }
 }

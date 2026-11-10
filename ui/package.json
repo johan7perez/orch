@@ -1,7 +1,6 @@
 {
   "name": "orch-ui",
   "private": true,
-  "version": "0.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,14 +8,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
+    "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "^2",
     "@xyflow/react": "^12.11.6",
     "react": "^19",
     "react-dom": "^19"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
+    "@tauri-apps/cli": "^2.12.4",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^5",

@@ -23,6 +23,10 @@ tonic.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+# Que compile en Windows sin NASM (ver el Cargo.toml del workspace).
+[target.'cfg(windows)'.dependencies]
+aws-lc-rs.workspace = true
+
 [dev-dependencies]
 orch-connectors.workspace = true
 rcgen.workspace = true

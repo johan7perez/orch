@@ -251,7 +251,9 @@ comprobable sin instalarlo. El DSN se toma de `ORCH_TEST_PG_DSN`.
   `bundle.icon`, y GTK descarta en silencio uno de 512 px: va primero el de 256.
 - ✅ Probado en Windows y en Linux (Linux Mint 22.3, X11): build completa,
   tests —los de PostgreSQL contra un servidor real— y la app arrancada.
-- ⬜ Falta pasar por macOS.
+- ⬜ Falta pasar por macOS: la CI de la Fase 7.3 compila y pasa los tests
+  allí, pero no ha corrido todavía, y la aplicación no se ha abierto en un
+  Mac.
 
 ## Fase 2 — Diseñador visual + SDK de conectores ✅
 
@@ -740,8 +742,9 @@ nuevas.
   por D-Bus la notificación del cuelgue a los 3 s y la del fallo después; al
   frente, ninguna, y el aviso sale dentro. De paso quedó visto en la ventana
   el aviso de la 3.2, que no se había podido comprobar.
-- ⬜ La notificación se presenta con el nombre del ejecutable (`orch-app`):
-  el plugin no deja elegirlo. Ver qué muestra con la aplicación instalada.
+- ✅ En Linux salía con el nombre del ejecutable (`orch-app`), que el plugin
+  no deja elegir; ahora sale como «Orch» (Fase 7.2). En Windows y macOS el
+  plugin ya usa el de la aplicación instalada.
 
 ### 6.3 Lineage entre pipelines ✅
 
@@ -766,6 +769,75 @@ nuevas.
 - ✅ Tests: el caso de `parquet.yaml`, dos pipelines pasados en orden inverso,
   un ciclo, y que validar no usa el esquema prestado.
 - ⬜ Seguir también tablas (PostgreSQL), no sólo ficheros.
+
+## Fase 7 — Distribuirlo 🚧
+
+Hasta aquí Orch se usa compilándolo. Para que lo use alguien que no lo
+compila hacen falta instaladores, que la aplicación instalada encuentre sus
+cosas sin un directorio de trabajo con sentido, y que cada versión se
+compruebe y se publique igual en los tres sistemas. Queda en curso sólo
+porque la CI y la publicación no han corrido todavía en GitHub.
+
+### 7.1 La aplicación instalada encuentra sus cosas ✅
+
+- ✅ El historial por defecto está en la carpeta de datos del usuario
+  (`~/.local/share/orch`, `~/Library/Application Support/orch`,
+  `%LOCALAPPDATA%\orch`) y es el mismo para la CLI, el demonio y la
+  aplicación (`orch_store::ruta_por_defecto`). Antes era `orch.duckdb` en el
+  directorio de trabajo: en macOS una aplicación arranca en `/`, donde no se
+  escribe, y la CLI y la aplicación sólo coincidían lanzadas desde el mismo
+  sitio. `--store` y `ORCH_STORE` siguen mandando.
+- ✅ La carpeta de pipelines elegida se recuerda entre arranques
+  (`~/.config/orch/aplicacion.json` o su equivalente), escrita al lado y
+  renombrada; si ya no existe, o el fichero está roto, se sigue sin ella.
+- ✅ La primera vez, la aplicación abre los ejemplos que trae el instalador,
+  copiados a la carpeta de datos (dentro del paquete no se escribe, y un
+  ejemplo escribe sus salidas al lado). Si ya estaban copiados no se tocan:
+  pueden estar editados.
+- ✅ Tests de las preferencias y de la copia, y probado con el binario del
+  `.deb` arrancado desde `/` con carpetas de datos vacías: creó el historial,
+  copió los ejemplos desde `/usr/lib/Orch/ejemplos` y la lista los enseña.
+
+### 7.2 Instaladores ✅
+
+- ✅ Una sola versión: la de `[workspace.package]`. Las dependencias
+  internas ya no repiten la suya, y `tauri.conf.json` y `package.json` no
+  llevan ninguna (el instalador toma la del `Cargo.toml`).
+- ✅ Datos del paquete completos (descripción, licencia, página, categoría),
+  ejemplos entre sus recursos, `libssl3` declarada (el conector de PostgreSQL
+  enlaza OpenSSL), instalador de Windows en español, y en macOS firma ad hoc
+  —sin ella un binario de Apple Silicon no arranca— y mínimo macOS 11.
+- ✅ Compilar en Windows sin instalar NASM: el workspace activa los objetos
+  ya ensamblados de aws-lc (`prebuilt-nasm`), la criptografía de rustls.
+- ✅ Release sin la tabla de símbolos: la CLI pasa de 173 a 142 MB.
+- ✅ Construidos y revisados aquí los de Linux: `.deb` y `.rpm` de 53 MB y
+  AppImage de 124 MB. Hizo falta alinear `@tauri-apps/api` y `cli` con la
+  minor del crate `tauri`: `tauri build` lo exige y `tauri dev` no.
+- ✅ La notificación, en Linux, como «Orch» con su icono y su entrada de
+  escritorio (cerraba un ⬜ de la 6.2); comprobado en D-Bus.
+- ⬜ Los de Windows y macOS se construyen en la CI (7.4); no se han probado
+  en esos sistemas.
+
+### 7.3 Integración continua en Linux, Windows y macOS 🚧
+
+- ✅ `.github/workflows/ci.yml`: formato, y clippy y tests en Linux,
+  Windows y macOS en cada push a `main` y en cada pull request, con los
+  plugins de ejemplo compilados antes. Sin información de depuración, para
+  que los ejecutables de test quepan en el disco del runner. Validado contra
+  el esquema de GitHub Actions.
+- ⬜ Que corra por primera vez (hay que subirlo). Es la forma de pasar por
+  macOS sin un Mac a mano, y en Windows no se compila desde la Fase 4.
+
+### 7.4 Publicar una versión 🚧
+
+- ✅ `.github/workflows/publicar.yml`: una etiqueta `v*` comprueba que es la
+  versión del `Cargo.toml`, crea un borrador de release con la sección de esa
+  versión del `CHANGELOG.md` (y falla si no la hay), y en Linux, Windows y
+  macOS (Apple Silicon e Intel) construye los instaladores y la CLI y los
+  sube. Se publica a mano. El proceso, en `docs/PUBLICAR.md`.
+- ⬜ La primera etiqueta.
+- ⬜ Firmar los instaladores (certificados de Apple y de Windows) y un
+  actualizador.
 
 ---
 
